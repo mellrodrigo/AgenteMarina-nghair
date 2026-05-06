@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # Evolution API para WhatsApp
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: evolution-api
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - DB_CONNECTION=sqlite
+      - DB_SAVE_DATA_INSTANCE=true
+      - DB_SAVE_DATA_NEW_MESSAGE=true
+      - DB_SAVE_DATA_NEW_MESSAGE_UPDATE=true
+      - DB_SAVE_DATA_NEW_DIFFUTIL_CONTACTS=true
+      - DB_SAVE_DATA_NEW_DIFFUTIL_CHATS=true
+      - DB_SAVE_DATA_NEW_DIFFUTIL_MESSAGES=true
+      - WEBHOOK_GLOBAL_URL=http://localhost:8000/webhook/whatsapp
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=true
+    volumes:
+      - evolution-data:/home/evolution/instances
+    networks:
+      - marina-network
+    restart: always
+
+  # PostgreSQL (opcional, para produção)
+  postgres:
+    image: postgres:15-alpine
+    container_name: marina-postgres
+    environment:
+      - POSTGRES_DB=marina
+      - POSTGRES_USER=marina
+      - POSTGRES_PASSWORD=marina_secure_password_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - marina-network
+    restart: always
+
+  # Redis (opcional, para cache e filas)
+  redis:
+    image: redis:7-alpine
+    container_name: marina-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - marina-network
+    restart: always
+
+volumes:
+  evolution-data:
+  postgres-data:
+  redis-data:
+
+networks:
+  marina-network:
+    driver: bridge
