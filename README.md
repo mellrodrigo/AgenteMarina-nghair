@@ -62,8 +62,8 @@ EVOLUTION_API_URL=http://localhost:8080
 EVOLUTION_API_KEY=sua-chave-aqui
 
 # Trinks
-TRINKS_EMAIL=mellrodrigo@gmail.com
-TRINKS_PASSWORD=Rods2023$
+TRINKS_EMAIL=  e o email de acesso
+TRINKS_PASSWORD=   falta colocar a senha aqui 
 
 # Database
 DATABASE_URL=sqlite:///./data/marina.db
