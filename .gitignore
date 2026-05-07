@@ -1,0 +1,15 @@
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Banco de dados local
+data/marina.db
+
+# Logs locais
+marina.log
+logs/
+
+# Teste
+test_local.py
