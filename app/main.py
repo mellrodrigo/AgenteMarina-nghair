@@ -1,277 +1,174 @@
 """
-API Principal da Marina
-FastAPI application para o agente de IA do NGHair
+Marina - Agente de IA para NGHair
+Versão adaptada para hospedagem compartilhada Hostinger (Flask + Python 3.6+)
 """
 import logging
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from datetime import datetime
 import json
+import os
+import sys
+import threading
+from datetime import datetime
+from flask import Flask, request, jsonify
 
-# Configurações
-from config import DEBUG, API_WEBHOOK_URL, LOG_LEVEL
-from app.models.database import criar_tabelas, get_db
-from app.schemas.whatsapp import MensagemWhatsApp, RespostaWhatsApp, WebhookEvolutionAPI
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.models.database import SessionLocal, criar_tabelas
 from app.services.cliente_service import cliente_service
 from app.services.ai_core import ai_core
-from app.services.evolution_api import evolution_api
-from app.services.agendamento_service import agendamento_service
+from app.services.evolution_api import evolution_api_client
+from config import WHATSAPP_INSTANCE_NAME
 
-# Configurar logging
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('marina.log'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Criar aplicação FastAPI
-app = FastAPI(
-    title="Marina - NGHair AI Agent",
-    description="Agente de IA inteligente para o salão NGHair",
-    version="1.0.0"
-)
-
-# Configurar CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Criar tabelas ao iniciar
-@app.on_event("startup")
-async def startup_event():
-    """Executado ao iniciar a aplicação"""
-    logger.info("Iniciando Marina...")
-    criar_tabelas()
-    logger.info("Banco de dados inicializado")
+app = Flask(__name__)
+criar_tabelas()
+logger.info("Marina iniciada com sucesso!")
 
 
-@app.get("/")
-async def root():
-    """Endpoint raiz"""
-    return {
-        "message": "Marina - NGHair AI Agent",
-        "version": "1.0.0",
-        "status": "online"
-    }
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "ok",
+        "agente": "Marina",
+        "salao": "NGHair",
+        "versao": "1.0.0",
+        "timestamp": datetime.now().isoformat()
+    })
 
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
-@app.post("/webhook/whatsapp")
-async def webhook_whatsapp(
-    webhook_data: WebhookEvolutionAPI,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """
-    Webhook para receber mensagens do WhatsApp via Evolution API
-    """
+@app.route('/webhook/whatsapp', methods=['POST'])
+def webhook_whatsapp():
     try:
-        logger.info(f"Webhook recebido: {webhook_data.event}")
-        
-        # Processar apenas eventos de mensagens
-        if webhook_data.event != "messages.upsert":
-            return {"status": "ok"}
-        
-        # Extrair dados da mensagem
-        data = webhook_data.data
-        
-        # Verificar se é mensagem de entrada
-        if data.get("direction") != "in":
-            return {"status": "ok"}
-        
-        # Extrair informações
-        telefone = data.get("key", {}).get("remoteJid", "").replace("@s.whatsapp.net", "")
-        mensagem_texto = data.get("message", {}).get("conversation", "")
-        
-        if not telefone or not mensagem_texto:
-            logger.warning("Dados incompletos na mensagem")
-            return {"status": "ok"}
-        
-        logger.info(f"Mensagem recebida de {telefone}: {mensagem_texto[:50]}...")
-        
-        # Processar em background
-        background_tasks.add_task(
-            processar_mensagem_whatsapp,
-            telefone,
-            mensagem_texto,
-            db
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"status": "ok"}), 200
+
+        logger.info("Webhook recebido: %s", str(data)[:200])
+
+        event = data.get('event', '')
+        if event not in ['messages.upsert', 'MESSAGES_UPSERT']:
+            return jsonify({"status": "ok"}), 200
+
+        msg_data = data.get('data', {})
+        direction = msg_data.get('direction', '')
+        if direction == 'out':
+            return jsonify({"status": "ok"}), 200
+
+        key = msg_data.get('key', {})
+        remote_jid = key.get('remoteJid', '')
+
+        if '@g.us' in remote_jid:
+            return jsonify({"status": "ok"}), 200
+
+        telefone = remote_jid.replace('@s.whatsapp.net', '').replace('@c.us', '')
+
+        message = msg_data.get('message', {})
+        texto = (
+            message.get('conversation') or
+            message.get('extendedTextMessage', {}).get('text') or
+            message.get('imageMessage', {}).get('caption') or ''
         )
-        
-        return {"status": "ok"}
-        
+
+        if not texto or not telefone:
+            return jsonify({"status": "ok"}), 200
+
+        logger.info("Mensagem de %s: %s", telefone, texto[:100])
+
+        t = threading.Thread(
+            target=processar_mensagem_background,
+            args=(telefone, texto, remote_jid)
+        )
+        t.daemon = True
+        t.start()
+
+        return jsonify({"status": "ok"}), 200
+
     except Exception as e:
-        logger.error(f"Erro no webhook: {str(e)}")
-        return {"status": "error", "message": str(e)}
+        logger.error("Erro no webhook: %s", str(e))
+        return jsonify({"status": "error"}), 500
 
 
-async def processar_mensagem_whatsapp(telefone: str, mensagem: str, db: Session):
-    """
-    Processa mensagem do WhatsApp em background
-    """
+def processar_mensagem_background(telefone, texto, remote_jid):
+    db = SessionLocal()
     try:
-        logger.info(f"Processando mensagem de {telefone}")
-        
-        # Obter ou criar cliente
-        cliente = cliente_service.obter_ou_criar_cliente(db, telefone)
-        
-        # Obter contexto completo do cliente
-        contexto_cliente = cliente_service.obter_info_cliente_completa(db, cliente.id)
-        
-        # Processar com IA
-        resposta, intencao = await ai_core.processar_mensagem(
-            mensagem,
-            contexto_cliente,
-            contexto_cliente.get("conversas_recentes", [])
+        cliente = cliente_service.buscar_ou_criar_cliente(db, telefone)
+        contexto = cliente_service.obter_contexto_cliente(db, cliente.id)
+        historico = cliente_service.obter_historico_conversas(db, cliente.id, limite=5)
+
+        resposta, intencao = ai_core.processar_mensagem_sync(
+            mensagem=texto,
+            cliente_info=contexto,
+            historico_conversas=historico
         )
-        
-        # Salvar conversa
+
         cliente_service.salvar_conversa(
-            db,
-            cliente.id,
-            mensagem,
-            resposta,
-            intencao,
-            {"timestamp": datetime.utcnow().isoformat()}
+            db=db,
+            cliente_id=cliente.id,
+            mensagem_usuario=texto,
+            resposta_marina=resposta,
+            intencao=intencao
         )
-        
-        # Atualizar memória se necessário
-        if intencao in ["agendamento", "consulta_servicos", "consulta_preco"]:
-            cliente_service.atualizar_memoria(
-                db,
-                cliente.id,
-                f"interacao_{intencao}",
-                mensagem,
-                relevancia=0.8
+
+        evolution_api_client.enviar_mensagem(
+            instance=WHATSAPP_INSTANCE_NAME,
+            numero=remote_jid,
+            mensagem=resposta
+        )
+
+        logger.info("Resposta enviada para %s", telefone)
+
+    except Exception as e:
+        logger.error("Erro ao processar mensagem de %s: %s", telefone, str(e))
+        try:
+            evolution_api_client.enviar_mensagem(
+                instance=WHATSAPP_INSTANCE_NAME,
+                numero=remote_jid,
+                mensagem="Desculpe, tive um problema tecnico. Pode tentar novamente? 😊"
             )
-        
-        # Enviar resposta via WhatsApp
-        await enviar_resposta_whatsapp(telefone, resposta)
-        
-        logger.info(f"Resposta enviada para {telefone}")
-        
-    except Exception as e:
-        logger.error(f"Erro ao processar mensagem: {str(e)}")
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
-async def enviar_resposta_whatsapp(telefone: str, mensagem: str):
-    """
-    Envia resposta via WhatsApp usando Evolution API
-    """
+@app.route('/clientes', methods=['GET'])
+def listar_clientes():
+    db = SessionLocal()
     try:
-        # Remover caracteres especiais do número
-        numero_limpo = telefone.replace("@s.whatsapp.net", "").replace("+", "")
-        
-        # Enviar via Evolution API
-        sucesso = await evolution_api.enviar_mensagem(numero_limpo, mensagem)
-        
-        if sucesso:
-            logger.info(f"Mensagem enviada com sucesso para {numero_limpo}")
-        else:
-            logger.error(f"Falha ao enviar mensagem para {numero_limpo}")
-        
-    except Exception as e:
-        logger.error(f"Erro ao enviar resposta: {str(e)}")
+        clientes = cliente_service.listar_clientes(db)
+        return jsonify({
+            "total": len(clientes),
+            "clientes": [{"id": c.id, "nome": c.nome, "telefone": c.telefone} for c in clientes]
+        })
+    finally:
+        db.close()
 
 
-@app.post("/api/clientes/{cliente_id}/agendamento")
-async def criar_agendamento(
-    cliente_id: int,
-    data: str,
-    servico: str,
-    profissional: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Cria um novo agendamento para o cliente
-    """
+@app.route('/status', methods=['GET'])
+def status():
+    db = SessionLocal()
     try:
-        from app.models.database import Agendamento
-        from datetime import datetime
-        
-        cliente = cliente_service.obter_cliente_por_id(db, cliente_id)
-        if not cliente:
-            raise HTTPException(status_code=404, detail="Cliente não encontrado")
-        
-        # Criar agendamento
-        agendamento = Agendamento(
-            cliente_id=cliente_id,
-            data=datetime.fromisoformat(data),
-            servico=servico,
-            profissional=profissional,
-            status="confirmado"
-        )
-        
-        db.add(agendamento)
-        db.commit()
-        db.refresh(agendamento)
-        
-        logger.info(f"Agendamento criado para cliente {cliente_id}")
-        
-        return {
-            "id": agendamento.id,
-            "cliente_id": cliente_id,
-            "data": agendamento.data.isoformat(),
-            "servico": servico,
-            "profissional": profissional,
-            "status": "confirmado"
-        }
-        
-    except Exception as e:
-        logger.error(f"Erro ao criar agendamento: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        total = len(cliente_service.listar_clientes(db))
+        return jsonify({
+            "status": "online",
+            "agente": "Marina",
+            "salao": "NGHair",
+            "total_clientes": total,
+            "timestamp": datetime.now().isoformat()
+        })
+    finally:
+        db.close()
 
 
-@app.get("/api/clientes/{cliente_id}")
-async def obter_cliente(cliente_id: int, db: Session = Depends(get_db)):
-    """Obtém informações do cliente"""
-    cliente = cliente_service.obter_cliente_por_id(db, cliente_id)
-    if not cliente:
-        raise HTTPException(status_code=404, detail="Cliente não encontrado")
-    
-    return cliente_service.obter_info_cliente_completa(db, cliente_id)
-
-
-@app.get("/api/clientes")
-async def listar_clientes(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    """Lista clientes"""
-    clientes = cliente_service.listar_clientes(db, skip, limit)
-    return [
-        {
-            "id": c.id,
-            "nome": c.nome,
-            "telefone": c.telefone,
-            "ultima_interacao": c.ultima_interacao.isoformat()
-        }
-        for c in clientes
-    ]
-
-
-@app.get("/api/clientes/{cliente_id}/estatisticas")
-async def obter_estatisticas(cliente_id: int, db: Session = Depends(get_db)):
-    """Obtém estatísticas do cliente"""
-    return cliente_service.obter_estatisticas_cliente(db, cliente_id)
-
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=DEBUG,
-        log_level=LOG_LEVEL.lower()
-    )
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    logger.info("Iniciando Marina na porta %d...", port)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
