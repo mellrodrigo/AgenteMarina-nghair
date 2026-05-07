@@ -379,3 +379,6 @@ class EvolutionAPIClient:
 
 # Instância global
 evolution_api = EvolutionAPIClient()
+
+# Alias para compatibilidade
+evolution_api_client = evolution_api
