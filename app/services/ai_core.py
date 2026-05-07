@@ -1,28 +1,27 @@
 """
-Core de IA da Marina
+Core de IA da Marina usando Google Gemini
 Responsável por processar mensagens e gerar respostas personalizadas
 """
 import logging
 import json
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
-from sqlalchemy.orm import Session
-from openai import OpenAI
+import google.generativeai as genai
 
 # Configurações
-from config import OPENAI_API_KEY, OPENAI_MODEL, MARINA_NAME, MARINA_SALAO, MAX_CONVERSATION_HISTORY
+from config import GEMINI_API_KEY, GEMINI_MODEL, MARINA_NAME, MARINA_SALAO, MAX_CONVERSATION_HISTORY
 
 logger = logging.getLogger(__name__)
 
-# Inicializar cliente OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Configurar Gemini
+genai.configure(api_key=GEMINI_API_KEY)
 
 
 class AICoreMariana:
-    """Core de IA para processar mensagens e gerar respostas"""
+    """Core de IA para processar mensagens usando Google Gemini"""
 
     def __init__(self):
-        self.model = OPENAI_MODEL
+        self.model = genai.GenerativeModel(GEMINI_MODEL)
         self.marina_name = MARINA_NAME
         self.salao_name = MARINA_SALAO
 
@@ -82,7 +81,7 @@ Responda sempre em português brasileiro, de forma natural e conversacional."""
         mensagem: str,
         cliente_info: Dict[str, Any],
         historico_conversas: List[Dict[str, str]] = None
-    ) -> tuple[str, str]:
+    ) -> Tuple[str, str]:
         """
         Processa uma mensagem e retorna resposta + intenção
         
@@ -90,43 +89,29 @@ Responda sempre em português brasileiro, de forma natural e conversacional."""
             (resposta, intenção)
         """
         try:
-            logger.info(f"Processando mensagem de {cliente_info.get('nome')}")
+            logger.info(f"Processando mensagem de {cliente_info.get('nome')} com Gemini")
             
             # Construir histórico de conversas
-            messages = []
+            historico_text = ""
             
             if historico_conversas:
+                historico_text = "\nHistórico de conversas anteriores:\n"
                 for conv in historico_conversas[-MAX_CONVERSATION_HISTORY:]:
-                    messages.append({
-                        "role": "user",
-                        "content": conv.get("mensagem_usuario", "")
-                    })
-                    messages.append({
-                        "role": "assistant",
-                        "content": conv.get("resposta_marina", "")
-                    })
+                    historico_text += f"Cliente: {conv.get('mensagem_usuario', '')}\n"
+                    historico_text += f"Marina: {conv.get('resposta_marina', '')}\n"
             
-            # Adicionar mensagem atual
-            messages.append({
-                "role": "user",
-                "content": mensagem
-            })
+            # Construir prompt completo
+            prompt_completo = f"""{self._construir_prompt_sistema(cliente_info)}
+
+{historico_text}
+
+Mensagem do cliente: {mensagem}
+
+Responda de forma natural e conversacional."""
             
-            # Chamar OpenAI
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self._construir_prompt_sistema(cliente_info)
-                    }
-                ] + messages,
-                temperature=0.7,
-                max_tokens=500,
-                top_p=0.9
-            )
-            
-            resposta = response.choices[0].message.content
+            # Chamar Gemini
+            response = self.model.generate_content(prompt_completo)
+            resposta = response.text
             
             # Classificar intenção
             intencao = await self._classificar_intencao(mensagem)
@@ -167,30 +152,80 @@ Responda sempre em português brasileiro, de forma natural e conversacional."""
 
     async def gerar_recomendacao(self, cliente_info: Dict[str, Any]) -> str:
         """
-        Gera uma recomendação personalizada para o cliente
+        Gera uma recomendação personalizada para o cliente usando Gemini
         """
         try:
             historico = cliente_info.get("historico_servicos", [])
+            nome = cliente_info.get("nome", "Cliente")
             
             if not historico:
                 return "Que tal começar com um corte e escova? 💇‍♀️"
             
-            # Lógica simples de recomendação
-            ultimo_servico = historico[-1] if historico else None
+            # Usar Gemini para gerar recomendação personalizada
+            prompt = f"""Você é a Marina, assistente do salão {self.salao_name}.
             
-            recomendacoes = {
-                "Corte Feminino": "Que tal uma hidratação para manter o cabelo brilhante? ✨",
-                "Coloração": "Que tal um corte para realçar a cor? 💇‍♀️",
-                "Escova Simples": "Que tal fazer uma coloração para um visual novo? 🎨",
-                "Manicure": "Que tal complementar com uma pedicure? 💅",
-                "Pedicure": "Que tal uma manicure para ficar perfeita? 💅",
-            }
+Gere uma recomendação personalizada e amigável para {nome}.
+Histórico de serviços: {', '.join(historico[-3:])}
+
+A recomendação deve:
+- Ser breve (1-2 linhas)
+- Ser personalizada baseada no histórico
+- Sugerir um serviço específico
+- Ser amigável e profissional
+- Incluir 1-2 emojis
+
+Responda apenas com a recomendação."""
             
-            return recomendacoes.get(ultimo_servico, "Que tal agendar um serviço conosco? 💇‍♀️")
+            response = self.model.generate_content(prompt)
+            return response.text
             
         except Exception as e:
             logger.error(f"Erro ao gerar recomendação: {str(e)}")
             return "Que tal agendar um serviço conosco? 💇‍♀️"
+
+    async def gerar_resposta_criativa(self, tema: str, contexto: str = "") -> str:
+        """
+        Gera resposta criativa para temas específicos usando Gemini
+        """
+        try:
+            prompt = f"""Você é a Marina, assistente do salão {self.salao_name}.
+Tone: Profissional, amigável e acolhedora
+
+Gere uma resposta criativa e amigável sobre: {tema}
+Contexto: {contexto}
+
+Responda de forma concisa e profissional em português brasileiro."""
+            
+            response = self.model.generate_content(prompt)
+            return response.text
+            
+        except Exception as e:
+            logger.error(f"Erro ao gerar resposta criativa: {str(e)}")
+            return "Desculpe, não consegui gerar uma resposta neste momento."
+
+    async def classificar_sentimento(self, mensagem: str) -> str:
+        """
+        Classifica sentimento da mensagem usando Gemini
+        Retorna: positivo, neutro, negativo
+        """
+        try:
+            prompt = f"""Classifique o sentimento desta mensagem em uma palavra: positivo, neutro ou negativo.
+
+Mensagem: "{mensagem}"
+
+Responda apenas com a classificação (positivo, neutro ou negativo)."""
+            
+            response = self.model.generate_content(prompt)
+            sentimento = response.text.strip().lower()
+            
+            if sentimento in ["positivo", "neutro", "negativo"]:
+                return sentimento
+            else:
+                return "neutro"
+                
+        except Exception as e:
+            logger.error(f"Erro ao classificar sentimento: {str(e)}")
+            return "neutro"
 
 
 # Instância global

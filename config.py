@@ -18,9 +18,9 @@ TRINKS_EMAIL = os.getenv("TRINKS_EMAIL", "mellrodrigo@gmail.com")
 TRINKS_PASSWORD = os.getenv("TRINKS_PASSWORD", "Rods2023$")
 TRINKS_SYNC_INTERVAL = int(os.getenv("TRINKS_SYNC_INTERVAL", "3600"))  # 1 hora
 
-# OpenAI
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4-1-mini")
+# Google Gemini
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")
 
 # Evolution API / WhatsApp
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
