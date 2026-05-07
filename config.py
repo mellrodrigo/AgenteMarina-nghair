@@ -20,7 +20,7 @@ TRINKS_SYNC_INTERVAL = int(os.getenv("TRINKS_SYNC_INTERVAL", "3600"))  # 1 hora
 
 # Google Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAjNKdBC4ewfXyyqNDzwcupHzvjvOXZ7WQ")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 # Evolution API / WhatsApp
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")

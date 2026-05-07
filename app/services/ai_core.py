@@ -10,7 +10,7 @@ import os
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyAjNKdBC4ewfXyyqNDzwcupHzvjvOXZ7WQ")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={}".format(GEMINI_API_KEY)
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={}".format(GEMINI_API_KEY)
 MARINA_NAME = os.environ.get("MARINA_NAME", "Marina")
 MARINA_SALAO = os.environ.get("MARINA_SALAO", "NGHair")
 
