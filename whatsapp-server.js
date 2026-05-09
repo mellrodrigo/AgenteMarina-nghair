@@ -1,7 +1,7 @@
 /**
  * Marina - Agente de IA NGHair
  * Servidor unificado: WhatsApp + Gemini AI + Memória de Clientes
- * Versão Node.js - sem dependência de Python/gunicorn
+ * Versão 4.0 - Correção de mensagens duplicadas + Prompt aprimorado
  */
 
 const makeWASocket = require('@whiskeysockets/baileys').default;
@@ -18,6 +18,7 @@ const SESSION_DIR = path.join(__dirname, 'sessions');
 const DATA_DIR = path.join(__dirname, 'data');
 const LOG_DIR = path.join(__dirname, 'logs');
 const CLIENTS_FILE = path.join(DATA_DIR, 'clientes.json');
+
 // API OpenAI-compatible (Gemini 2.5 Flash via Manus proxy)
 const AI_API_KEY = 'sk-XbR65DLnm2wza2KsiXrXMV';
 const AI_BASE_URL = 'https://api.manus.im/api/llm-proxy/v1';
@@ -35,7 +36,18 @@ function log(level, msg) {
     const ts = new Date().toISOString();
     const line = `[${ts}] [${level}] ${msg}\n`;
     process.stdout.write(line);
-    fs.appendFileSync(logFile, line);
+    try { fs.appendFileSync(logFile, line); } catch(e) {}
+}
+
+// ========== DEDUPLICAÇÃO DE MENSAGENS ==========
+// Evita processar a mesma mensagem duas vezes (problema recorrente com Baileys)
+const mensagensProcessadas = new Set();
+function jaProcessou(msgId) {
+    if (mensagensProcessadas.has(msgId)) return true;
+    mensagensProcessadas.add(msgId);
+    // Limpar cache após 5 minutos para não crescer indefinidamente
+    setTimeout(() => mensagensProcessadas.delete(msgId), 5 * 60 * 1000);
+    return false;
 }
 
 // ========== BANCO DE DADOS DE CLIENTES (JSON) ==========
@@ -45,7 +57,7 @@ if (fs.existsSync(CLIENTS_FILE)) {
 }
 
 function salvarClientes() {
-    fs.writeFileSync(CLIENTS_FILE, JSON.stringify(clientes, null, 2));
+    try { fs.writeFileSync(CLIENTS_FILE, JSON.stringify(clientes, null, 2)); } catch(e) {}
 }
 
 function obterCliente(numero, nome) {
@@ -128,32 +140,43 @@ function chamarAI(messages) {
 }
 
 async function gerarResposta(cliente, mensagem) {
-    // Construir histórico de conversa no formato OpenAI
+    const hoje = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+    const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+
     const systemPrompt = `Você é a Marina, assistente virtual do salão de beleza NGHair.
-Você é profissional, amigável e acolhedora. Fala em português brasileiro.
+Você é profissional, amigável, acolhedora e conhece muito sobre beleza. Fala em português brasileiro.
+
+DATA E HORA ATUAL: ${hoje}, ${hora} (horário de Brasília)
 
 SOBRE O NGHAIR:
-- Salão moderno e descontraído para mulheres independentes
-- Serviços: corte feminino, coloração, mechas, luzes, escova, hidratação, tratamentos capilares, manicure, pedicure, sobrancelha, cílios, depilação, maquiagem, massagem
-- Horário: Segunda a Sábado, 9h às 19h
-- Agendamentos: pelo WhatsApp ou pelo app Trinks
-- Localização: pergunte ao cliente para informar o endereço completo
+- Salão moderno e descontraído, especializado em mulheres independentes
+- Serviços disponíveis:
+  * Cabelo: corte feminino, coloração, mechas, luzes, balayage, escova progressiva, escova modeladora, hidratação, botox capilar, cauterização, tratamentos capilares
+  * Unhas: manicure, pedicure, gel, acrílico, fibra de vidro, nail art
+  * Estética facial: design de sobrancelha, henna de sobrancelha, extensão de cílios, limpeza de pele, maquiagem
+  * Depilação: cera quente, cera fria, linha
+  * Relaxamento: massagem relaxante, massagem modeladora
+- Horário de funcionamento: Segunda a Sábado, das 9h às 19h
+- Agendamentos: pelo WhatsApp (aqui mesmo!) ou pelo app Trinks
+- Para preços específicos: os valores variam conforme o profissional e complexidade do serviço
 
 PERFIL DO CLIENTE:
 - Nome: ${cliente.nome}
-- Total de mensagens: ${cliente.totalMensagens}
-- Primeiro contato: ${cliente.primeiroContato ? new Date(cliente.primeiroContato).toLocaleDateString('pt-BR') : 'hoje'}
+- Cliente desde: ${cliente.primeiroContato ? new Date(cliente.primeiroContato).toLocaleDateString('pt-BR') : 'hoje'}
+- Total de interações: ${cliente.totalMensagens}
 ${cliente.servicosUsados.length > 0 ? '- Serviços que costuma fazer: ' + cliente.servicosUsados.join(', ') : ''}
-${cliente.preferencias.length > 0 ? '- Preferências: ' + cliente.preferencias.join(', ') : ''}
+${cliente.preferencias.length > 0 ? '- Preferências registradas: ' + cliente.preferencias.join(', ') : ''}
 
-INSTRUÇÕES:
-- Responda de forma natural e personalizada
-- Seja concisa (máximo 3 parágrafos)
-- Se o cliente quiser agendar, oriente-o a informar: serviço desejado, data e horário preferido
-- Se perguntar sobre preços, diga que os valores variam por profissional e serviço, e sugira entrar em contato para consultar
-- Sempre termine com uma pergunta ou chamada para ação quando apropriado
-- Use emojis com moderação (máximo 2 por mensagem)
-- NUNCA invente informações sobre preços específicos ou disponibilidade de horários`;
+INSTRUÇÕES IMPORTANTES:
+1. Responda de forma natural, calorosa e personalizada - use o nome do cliente quando adequado
+2. Seja concisa: máximo 3 parágrafos curtos por resposta
+3. Para agendamentos: colete serviço desejado, data e horário preferido, e nome completo
+4. Para preços: informe que os valores variam e sugira entrar em contato para orçamento personalizado
+5. Se o cliente perguntar algo fora do escopo do salão (viagens, política, etc.), redirecione gentilmente para o NGHair
+6. Use emojis com moderação (máximo 2 por mensagem)
+7. NUNCA invente preços específicos, nomes de profissionais ou horários disponíveis
+8. Sempre termine com uma pergunta ou chamada para ação quando apropriado
+9. Se o cliente demonstrar interesse em um serviço, registre mentalmente e personalize as próximas respostas`;
 
     // Montar mensagens com histórico
     const messages = [{ role: 'system', content: systemPrompt }];
@@ -163,16 +186,13 @@ INSTRUÇÕES:
     }
     messages.push({ role: 'user', content: mensagem });
 
-    const prompt = mensagem; // mantido para compatibilidade
-
     try {
         const resposta = await chamarAI(messages);
         log('INFO', `IA respondeu para ${cliente.numero}: ${resposta.substring(0, 60)}...`);
         return resposta;
     } catch(e) {
         log('ERROR', `AI error: ${e.message}`);
-        // Resposta padrão em caso de erro
-        return `Olá ${cliente.nome}! 😊 Sou a Marina, assistente do NGHair. Recebi sua mensagem e já vou te ajudar! Para agendar um serviço ou tirar dúvidas, pode me contar o que você precisa?`;
+        return `Olá ${cliente.nome}! 😊 Sou a Marina, assistente do NGHair. No momento estou com uma instabilidade técnica, mas já vou te ajudar! Para agendar ou tirar dúvidas, pode me contar o que você precisa?`;
     }
 }
 
@@ -235,7 +255,7 @@ async function conectarWhatsApp() {
                 log('WARN', `Conexão fechada. Status: ${statusCode}`);
 
                 if (statusCode === DisconnectReason.loggedOut) {
-                    log('INFO', 'Logout. Limpando sessão...');
+                    log('INFO', 'Logout detectado. Limpando sessão...');
                     try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); fs.mkdirSync(SESSION_DIR); } catch(e) {}
                     reconnectAttempts = 0;
                     setTimeout(conectarWhatsApp, 3000);
@@ -245,10 +265,10 @@ async function conectarWhatsApp() {
                 reconnectAttempts++;
                 if (reconnectAttempts <= MAX_RECONNECT) {
                     const delay = Math.min(reconnectAttempts * 5000, 60000);
-                    log('INFO', `Reconectando em ${delay/1000}s (${reconnectAttempts}/${MAX_RECONNECT})...`);
+                    log('INFO', `Reconectando em ${delay/1000}s (tentativa ${reconnectAttempts}/${MAX_RECONNECT})...`);
                     setTimeout(conectarWhatsApp, delay);
                 } else {
-                    log('ERROR', 'Máximo de reconexões. Aguardando 2min...');
+                    log('ERROR', 'Máximo de reconexões atingido. Aguardando 2min...');
                     reconnectAttempts = 0;
                     setTimeout(conectarWhatsApp, 120000);
                 }
@@ -260,14 +280,22 @@ async function conectarWhatsApp() {
         });
 
         // Processar mensagens recebidas
-        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        sock.ev.on('messages.upsert', async ({ messages: msgs, type }) => {
             if (type !== 'notify') return;
 
-            for (const msg of messages) {
+            for (const msg of msgs) {
+                // Ignorar mensagens enviadas por mim
                 if (msg.key.fromMe) continue;
                 if (!msg.key.remoteJid) continue;
                 if (msg.key.remoteJid.includes('@g.us')) continue;
                 if (msg.key.remoteJid.includes('broadcast')) continue;
+
+                // DEDUPLICAÇÃO: ignorar mensagem já processada
+                const msgId = msg.key.id;
+                if (jaProcessou(msgId)) {
+                    log('DEBUG', `Mensagem duplicada ignorada: ${msgId}`);
+                    continue;
+                }
 
                 const texto = msg.message?.conversation
                     || msg.message?.extendedTextMessage?.text
@@ -331,7 +359,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
-    // Health check (sem autenticação)
+    // Health check
     if (req.url === '/' || req.url === '/health') {
         res.writeHead(200);
         res.end(JSON.stringify({
@@ -340,7 +368,7 @@ const server = http.createServer(async (req, res) => {
             salao: 'NGHair',
             whatsapp: connectionState,
             clientes: Object.keys(clientes).length,
-            versao: '3.0.0',
+            versao: '4.0.0',
             timestamp: new Date().toISOString()
         }));
         return;
@@ -361,18 +389,19 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Status
+    // Status detalhado
     if (req.url === '/status') {
         res.writeHead(200);
         res.end(JSON.stringify({
             whatsapp: connectionState,
             numero: sock?.user?.id || null,
-            clientes: Object.keys(clientes).length
+            clientes: Object.keys(clientes).length,
+            reconnectAttempts
         }));
         return;
     }
 
-    // Compatibilidade com Evolution API (para o código Python existente)
+    // Compatibilidade com Evolution API
     if (req.url === '/instance/connectionState/NGHair') {
         res.writeHead(200);
         res.end(JSON.stringify({ instance: { instanceName: 'NGHair', state: connectionState } }));
@@ -393,7 +422,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    if (req.url === `/message/sendText/NGHair` && req.method === 'POST') {
+    if (req.url === '/message/sendText/NGHair' && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
@@ -413,12 +442,26 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Listar clientes (para debug/admin)
+    if (req.url === '/clientes') {
+        const lista = Object.values(clientes).map(c => ({
+            numero: c.numero,
+            nome: c.nome,
+            totalMensagens: c.totalMensagens,
+            ultimoContato: c.ultimoContato,
+            servicosUsados: c.servicosUsados
+        }));
+        res.writeHead(200);
+        res.end(JSON.stringify({ total: lista.length, clientes: lista }));
+        return;
+    }
+
     res.writeHead(404);
     res.end(JSON.stringify({ error: 'Not found' }));
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-    log('INFO', `Marina NGHair v3.0 iniciada na porta ${PORT}`);
+    log('INFO', `Marina NGHair v4.0 iniciada na porta ${PORT}`);
     log('INFO', `Clientes carregados: ${Object.keys(clientes).length}`);
     conectarWhatsApp();
 });
