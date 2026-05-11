@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # Evolution API para WhatsApp
   evolution-api:
     image: atendai/evolution-api:latest
     container_name: evolution-api
@@ -16,46 +15,35 @@ services:
       - DB_SAVE_DATA_NEW_DIFFUTIL_CONTACTS=true
       - DB_SAVE_DATA_NEW_DIFFUTIL_CHATS=true
       - DB_SAVE_DATA_NEW_DIFFUTIL_MESSAGES=true
-      - WEBHOOK_GLOBAL_URL=http://localhost:8000/webhook/whatsapp
+      # Altere para o domínio real antes do deploy
+      - WEBHOOK_GLOBAL_URL=${API_WEBHOOK_URL:-https://seu-dominio.com/webhook/whatsapp}
       - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=true
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-}
     volumes:
       - evolution-data:/home/evolution/instances
     networks:
       - marina-network
     restart: always
 
-  # PostgreSQL (opcional, para produção)
-  postgres:
-    image: postgres:15-alpine
-    container_name: marina-postgres
-    environment:
-      - POSTGRES_DB=marina
-      - POSTGRES_USER=marina
-      - POSTGRES_PASSWORD=marina_secure_password_123
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - marina-network
-    restart: always
-
-  # Redis (opcional, para cache e filas)
-  redis:
-    image: redis:7-alpine
-    container_name: marina-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    networks:
-      - marina-network
-    restart: always
+  # PostgreSQL — ative comentando as linhas abaixo quando quiser migrar do SQLite
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: marina-postgres
+  #   environment:
+  #     - POSTGRES_DB=marina
+  #     - POSTGRES_USER=marina
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-trocar_senha}
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   networks:
+  #     - marina-network
+  #   restart: always
 
 volumes:
   evolution-data:
-  postgres-data:
-  redis-data:
+  # postgres-data:
 
 networks:
   marina-network:

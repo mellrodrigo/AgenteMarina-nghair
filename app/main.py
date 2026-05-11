@@ -1,6 +1,6 @@
 """
-Marina - Agente de IA para NGHair
-Versão adaptada para hospedagem compartilhada Hostinger (Flask + Python 3.6+)
+Marina — Agente de IA para NGHair
+Flask + Gunicorn (Python 3.11)
 """
 import logging
 import json
@@ -16,13 +16,17 @@ from app.models.database import SessionLocal, criar_tabelas
 from app.services.cliente_service import cliente_service
 from app.services.ai_core import ai_core
 from app.services.evolution_api import evolution_api_client
+from app.services.trinks_api import trinks_api
 from config import WHATSAPP_INSTANCE_NAME
+
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('marina.log'),
+        logging.FileHandler('logs/marina.log'),
         logging.StreamHandler()
     ]
 )
@@ -30,8 +34,10 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 criar_tabelas()
-logger.info("Marina iniciada com sucesso!")
+logger.info("Marina iniciada!")
 
+
+# ── Health ────────────────────────────────────────────────────
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -39,10 +45,12 @@ def health_check():
         "status": "ok",
         "agente": "Marina",
         "salao": "NGHair",
-        "versao": "1.0.0",
+        "versao": "2.0.0",
         "timestamp": datetime.now().isoformat()
     })
 
+
+# ── Webhook WhatsApp ──────────────────────────────────────────
 
 @app.route('/webhook/whatsapp', methods=['POST'])
 def webhook_whatsapp():
@@ -58,8 +66,7 @@ def webhook_whatsapp():
             return jsonify({"status": "ok"}), 200
 
         msg_data = data.get('data', {})
-        direction = msg_data.get('direction', '')
-        if direction == 'out':
+        if msg_data.get('direction') == 'out':
             return jsonify({"status": "ok"}), 200
 
         key = msg_data.get('key', {})
@@ -84,9 +91,9 @@ def webhook_whatsapp():
 
         t = threading.Thread(
             target=processar_mensagem_background,
-            args=(telefone, texto, remote_jid)
+            args=(telefone, texto, remote_jid),
+            daemon=True
         )
-        t.daemon = True
         t.start()
 
         return jsonify({"status": "ok"}), 200
@@ -131,13 +138,15 @@ def processar_mensagem_background(telefone, texto, remote_jid):
             evolution_api_client.enviar_mensagem(
                 instance=WHATSAPP_INSTANCE_NAME,
                 numero=remote_jid,
-                mensagem="Desculpe, tive um problema tecnico. Pode tentar novamente? 😊"
+                mensagem="Desculpe, tive um probleminha técnico. Pode tentar novamente? 😊"
             )
         except Exception:
             pass
     finally:
         db.close()
 
+
+# ── Clientes ──────────────────────────────────────────────────
 
 @app.route('/clientes', methods=['GET'])
 def listar_clientes():
@@ -151,6 +160,8 @@ def listar_clientes():
     finally:
         db.close()
 
+
+# ── Status ────────────────────────────────────────────────────
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -168,7 +179,50 @@ def status():
         db.close()
 
 
+# ── Trinks API ────────────────────────────────────────────────
+
+@app.route('/trinks/status', methods=['GET'])
+def trinks_status():
+    """Verifica se a conexão com a API do Trinks está funcionando"""
+    resultado = trinks_api.testar_conexao()
+    ultima = trinks_api.ultima_sincronizacao
+    return jsonify({
+        "trinks_api": resultado,
+        "ultima_sincronizacao": ultima.isoformat() if ultima else None,
+        "timestamp": datetime.now().isoformat()
+    }), 200 if resultado["ok"] else 503
+
+
+@app.route('/trinks/sync', methods=['POST'])
+def trinks_sync():
+    """Dispara sincronização manual com a API do Trinks"""
+    db = SessionLocal()
+    try:
+        logger.info("Sincronização Trinks solicitada via API")
+        sucesso = trinks_api.sincronizar_dados(db)
+        if sucesso:
+            return jsonify({
+                "status": "ok",
+                "mensagem": "Sincronização com Trinks concluída",
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                "status": "erro",
+                "mensagem": "Falha na sincronização — verifique TRINKS_API_KEY e os logs"
+            }), 500
+    finally:
+        db.close()
+
+
+@app.route('/trinks/servicos', methods=['GET'])
+def trinks_servicos():
+    """Lista serviços direto da API Trinks (sem cache)"""
+    servicos = trinks_api.listar_servicos()
+    return jsonify({"total": len(servicos), "servicos": servicos})
+
+
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8000))
     logger.info("Iniciando Marina na porta %d...", port)
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
