@@ -159,7 +159,9 @@ def processar_mensagem_background(telefone, texto, remote_jid):
         resposta, intencao = ai_core.processar_mensagem_sync(
             mensagem=texto,
             cliente_info=contexto,
-            historico_conversas=historico
+            historico_conversas=historico,
+            db=db,
+            telefone=telefone,
         )
 
         cliente_service.salvar_conversa(

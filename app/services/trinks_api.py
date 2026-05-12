@@ -14,7 +14,7 @@ Campos reais confirmados pela API (NGHair, estabelecimentoId=20181):
 """
 import logging
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -51,6 +51,9 @@ class TrinksAPIClient:
             if resp.status_code == 403:
                 logger.error("Trinks API 403: acesso negado")
                 return None
+            if resp.status_code == 404:
+                logger.warning("Trinks endpoint não encontrado: %s", endpoint)
+                return None
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.Timeout:
@@ -64,7 +67,12 @@ class TrinksAPIClient:
         url = "{}/{}".format(self.base_url, endpoint.lstrip("/"))
         try:
             resp = self.session.post(url, json=payload, timeout=30)
-            resp.raise_for_status()
+            if resp.status_code == 404:
+                logger.warning("Trinks endpoint não encontrado: %s", endpoint)
+                return None
+            if not resp.ok:
+                logger.error("Trinks POST %s: %s %s", endpoint, resp.status_code, resp.text[:300])
+                return None
             return resp.json()
         except requests.exceptions.RequestException as e:
             logger.error("Trinks API POST erro em %s: %s", url, str(e))
@@ -129,6 +137,111 @@ class TrinksAPIClient:
         logger.info("Trinks: %d profissionais obtidos", len(profissionais))
         return profissionais
 
+    # ── Clientes ──────────────────────────────────────────────
+
+    def listar_clientes(self, telefone: str = None, nome: str = None) -> List[Dict]:
+        """GET /v1/clientes — busca por telefone ou nome"""
+        params = {}
+        if telefone:
+            tel_clean = "".join(filter(str.isdigit, telefone))
+            params["telefone"] = tel_clean
+        if nome:
+            params["nome"] = nome
+        dados = self._get("/v1/clientes", params=params)
+        if dados is None:
+            return []
+        if isinstance(dados, list):
+            return dados
+        return dados.get("data", [])
+
+    def criar_cliente(self, nome: str, telefone: str) -> Optional[Dict]:
+        """POST /v1/clientes — cria novo cliente no Trinks"""
+        tel_clean = "".join(filter(str.isdigit, telefone))
+        payload = {"nome": nome, "telefone": tel_clean}
+        resultado = self._post("/v1/clientes", payload)
+        if resultado:
+            logger.info("Trinks: cliente criado nome=%s", nome)
+        return resultado
+
+    def buscar_ou_criar_cliente(self, nome: str, telefone: str) -> Optional[int]:
+        """Retorna clienteId do Trinks, criando se necessário"""
+        if telefone:
+            clientes = self.listar_clientes(telefone=telefone)
+            if clientes:
+                cid = clientes[0].get("id")
+                logger.info("Trinks: cliente existente id=%s", cid)
+                return cid
+        resultado = self.criar_cliente(nome, telefone)
+        if resultado:
+            return resultado.get("id")
+        logger.warning("Trinks: não foi possível criar cliente %s", nome)
+        return None
+
+    # ── Disponibilidade ───────────────────────────────────────
+
+    def horarios_disponiveis(
+        self,
+        data: str,
+        servico_id: int = None,
+        profissional_id: int = None,
+    ) -> List[str]:
+        """Retorna lista de horários disponíveis (HH:MM) para uma data.
+        Tenta endpoint Trinks nativo; fallback: calcula a partir dos agendamentos do dia."""
+        params = {"data": data}
+        if servico_id:
+            params["servicoId"] = servico_id
+        if profissional_id:
+            params["profissionalId"] = profissional_id
+
+        for endpoint in [
+            "/v1/horarios-disponiveis",
+            "/v1/disponibilidade",
+            "/v1/agenda/disponibilidade",
+        ]:
+            dados = self._get(endpoint, params=params)
+            if dados is not None:
+                horarios = []
+                itens = dados if isinstance(dados, list) else dados.get("data", dados.get("horarios", []))
+                for h in itens:
+                    if isinstance(h, str):
+                        horarios.append(h)
+                    elif isinstance(h, dict) and h.get("disponivel", True):
+                        hora = h.get("hora") or h.get("horario") or h.get("dataHora", "")
+                        if hora:
+                            horarios.append(hora[-5:] if len(hora) > 5 else hora)
+                if horarios:
+                    logger.info("Trinks disponibilidade via %s: %d slots", endpoint, len(horarios))
+                    return horarios
+
+        return self._calcular_horarios_livres(data, profissional_id)
+
+    def _calcular_horarios_livres(self, data: str, profissional_id: int = None) -> List[str]:
+        """Fallback: calcula horários livres com base nos agendamentos existentes"""
+        agendamentos = self.listar_agendamentos(data_inicio=data, data_fim=data)
+        if profissional_id:
+            agendamentos = [a for a in agendamentos if a.get("profissional_id") == profissional_id]
+
+        ocupados = set()
+        for ag in agendamentos:
+            try:
+                dt_str = ag.get("data_hora", "")
+                if dt_str:
+                    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    ocupados.add(dt.strftime("%H:%M"))
+            except Exception:
+                pass
+
+        slots = []
+        hora = 8
+        while hora < 18:
+            for minuto in [0, 30]:
+                slot = "{:02d}:{:02d}".format(hora, minuto)
+                if slot not in ocupados:
+                    slots.append(slot)
+            hora += 1
+        logger.info("Trinks disponibilidade (fallback): %d slots para %s", len(slots), data)
+        return slots[:12]
+
     # ── Agendamentos ──────────────────────────────────────────
 
     def listar_agendamentos(
@@ -136,8 +249,7 @@ class TrinksAPIClient:
         data_inicio: str = None,
         data_fim: str = None,
     ) -> List[Dict[str, Any]]:
-        """GET /v1/agendamentos — campos reais aninhados: cliente.nome, profissional.nome,
-        servico.nome, status.nome, dataHoraInicio, valor, duracaoEmMinutos"""
+        """GET /v1/agendamentos"""
         params = {}
         if data_inicio:
             params["dataInicio"] = data_inicio
@@ -180,7 +292,6 @@ class TrinksAPIClient:
         try:
             logger.info("Sincronização Trinks iniciada...")
 
-            # Serviços — sincroniza todos (visíveis e não visíveis)
             servicos_api = self.listar_servicos(apenas_visiveis=False)
             for s in servicos_api:
                 if not s["nome"]:
@@ -206,7 +317,6 @@ class TrinksAPIClient:
                     except IntegrityError:
                         sp.rollback()
 
-            # Profissionais — usa apelido como nome de exibição
             profissionais_api = self.listar_profissionais()
             for p in profissionais_api:
                 if not p["nome"]:
