@@ -4,6 +4,7 @@ Usa dados reais de serviços e profissionais sincronizados do Trinks
 """
 import logging
 import os
+import time
 import requests
 
 logger = logging.getLogger(__name__)
@@ -77,17 +78,25 @@ class AICoreMariana:
     # ── Chamada Gemini ────────────────────────────────────────
 
     def _chamar_gemini(self, prompt):
-        try:
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 512}
-            }
-            resp = requests.post(GEMINI_URL, json=payload, timeout=30)
-            resp.raise_for_status()
-            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception as e:
-            logger.error("Erro Gemini API: %s", str(e))
-            return None
+        for attempt in range(3):
+            try:
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 512}
+                }
+                resp = requests.post(GEMINI_URL, json=payload, timeout=30)
+                if resp.status_code == 429:
+                    wait = 2 ** attempt
+                    logger.warning("Gemini 429, aguardando %ds (tentativa %d/3)...", wait, attempt + 1)
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception as e:
+                logger.error("Erro Gemini API: %s", str(e))
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        return None
 
     # ── Prompt ────────────────────────────────────────────────
 

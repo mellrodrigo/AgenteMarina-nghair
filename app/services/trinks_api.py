@@ -17,6 +17,7 @@ import requests
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
 
@@ -191,14 +192,19 @@ class TrinksAPIClient:
                     existente.categoria = s["categoria"]
                     existente.data_atualizacao = datetime.utcnow()
                 else:
-                    db.add(Servico(
-                        nome=s["nome"],
-                        descricao=s["descricao"],
-                        categoria=s["categoria"],
-                        preco=s["preco"],
-                        duracao_minutos=s["duracao_minutos"],
-                        ativo=True,
-                    ))
+                    try:
+                        sp = db.begin_nested()
+                        db.add(Servico(
+                            nome=s["nome"],
+                            descricao=s["descricao"],
+                            categoria=s["categoria"],
+                            preco=s["preco"],
+                            duracao_minutos=s["duracao_minutos"],
+                            ativo=True,
+                        ))
+                        sp.commit()
+                    except IntegrityError:
+                        sp.rollback()
 
             # Profissionais — usa apelido como nome de exibição
             profissionais_api = self.listar_profissionais()
@@ -209,11 +215,16 @@ class TrinksAPIClient:
                 if existente:
                     existente.data_atualizacao = datetime.utcnow()
                 else:
-                    db.add(Profissional(
-                        nome=p["nome"],
-                        cargo=p["cargo"],
-                        ativo=True,
-                    ))
+                    try:
+                        sp = db.begin_nested()
+                        db.add(Profissional(
+                            nome=p["nome"],
+                            cargo=p["cargo"],
+                            ativo=True,
+                        ))
+                        sp.commit()
+                    except IntegrityError:
+                        sp.rollback()
 
             db.commit()
             self.ultima_sincronizacao = datetime.utcnow()
