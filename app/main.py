@@ -166,7 +166,7 @@ def processar_mensagem_background(telefone, texto, remote_jid):
 
         evolution_api_client.enviar_mensagem(
             instance=WHATSAPP_INSTANCE_NAME,
-            numero=remote_jid,
+            numero=telefone,
             mensagem=resposta
         )
 
