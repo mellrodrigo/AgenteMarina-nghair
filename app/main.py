@@ -1,12 +1,13 @@
 """
 Marina — Agente de IA para NGHair
-Flask + Gunicorn (Python 3.11)
+Flask + Gunicorn
 """
 import logging
-import json
 import os
 import sys
 import threading
+import schedule
+import time
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -17,7 +18,7 @@ from app.services.cliente_service import cliente_service
 from app.services.ai_core import ai_core
 from app.services.evolution_api import evolution_api_client
 from app.services.trinks_api import trinks_api
-from config import WHATSAPP_INSTANCE_NAME
+from config import WHATSAPP_INSTANCE_NAME, TRINKS_SYNC_INTERVAL
 
 os.makedirs("logs", exist_ok=True)
 os.makedirs("data", exist_ok=True)
@@ -34,6 +35,46 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 criar_tabelas()
+
+
+# ── Sync Trinks automático ────────────────────────────────────
+
+def _executar_sync():
+    db = SessionLocal()
+    try:
+        logger.info("Sync automático Trinks iniciado...")
+        ok = trinks_api.sincronizar_dados(db)
+        if ok:
+            # Atualiza o prompt da IA com os novos dados
+            ai_core.atualizar_contexto_trinks(db)
+            logger.info("Sync Trinks concluído e IA atualizada")
+        else:
+            logger.warning("Sync Trinks falhou")
+    except Exception as e:
+        logger.error("Erro no sync Trinks: %s", str(e))
+    finally:
+        db.close()
+
+
+def _loop_agendador():
+    """Loop do scheduler em thread separada"""
+    intervalo_horas = max(1, TRINKS_SYNC_INTERVAL // 3600)
+    schedule.every(intervalo_horas).hours.do(_executar_sync)
+    logger.info("Agendador Trinks: sync a cada %dh", intervalo_horas)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+
+def _iniciar_sync_background():
+    """Sync inicial + inicia loop agendado"""
+    # Sync imediato na inicialização
+    threading.Thread(target=_executar_sync, daemon=True).start()
+    # Loop de sync periódico
+    threading.Thread(target=_loop_agendador, daemon=True).start()
+
+
+_iniciar_sync_background()
 logger.info("Marina iniciada!")
 
 
@@ -45,7 +86,7 @@ def health_check():
         "status": "ok",
         "agente": "Marina",
         "salao": "NGHair",
-        "versao": "2.0.0",
+        "versao": "2.1.0",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -89,12 +130,11 @@ def webhook_whatsapp():
 
         logger.info("Mensagem de %s: %s", telefone, texto[:100])
 
-        t = threading.Thread(
+        threading.Thread(
             target=processar_mensagem_background,
             args=(telefone, texto, remote_jid),
             daemon=True
-        )
-        t.start()
+        ).start()
 
         return jsonify({"status": "ok"}), 200
 
@@ -183,7 +223,6 @@ def status():
 
 @app.route('/trinks/status', methods=['GET'])
 def trinks_status():
-    """Verifica se a conexão com a API do Trinks está funcionando"""
     resultado = trinks_api.testar_conexao()
     ultima = trinks_api.ultima_sincronizacao
     return jsonify({
@@ -195,31 +234,103 @@ def trinks_status():
 
 @app.route('/trinks/sync', methods=['POST'])
 def trinks_sync():
-    """Dispara sincronização manual com a API do Trinks"""
     db = SessionLocal()
     try:
-        logger.info("Sincronização Trinks solicitada via API")
+        logger.info("Sync manual Trinks via API")
         sucesso = trinks_api.sincronizar_dados(db)
         if sucesso:
+            ai_core.atualizar_contexto_trinks(db)
             return jsonify({
                 "status": "ok",
-                "mensagem": "Sincronização com Trinks concluída",
-                "timestamp": datetime.now().isoformat()
+                "mensagem": "Sincronização concluída",
+                "ultima_sincronizacao": trinks_api.ultima_sincronizacao.isoformat()
             })
-        else:
-            return jsonify({
-                "status": "erro",
-                "mensagem": "Falha na sincronização — verifique TRINKS_API_KEY e os logs"
-            }), 500
+        return jsonify({"status": "erro", "mensagem": "Falha na sincronização — veja os logs"}), 500
     finally:
         db.close()
 
 
 @app.route('/trinks/servicos', methods=['GET'])
 def trinks_servicos():
-    """Lista serviços direto da API Trinks (sem cache)"""
-    servicos = trinks_api.listar_servicos()
-    return jsonify({"total": len(servicos), "servicos": servicos})
+    """Lista serviços do banco local (sincronizados do Trinks)"""
+    db = SessionLocal()
+    try:
+        from app.models.database import Servico
+        servicos = db.query(Servico).filter(Servico.ativo == True).all()
+        return jsonify({
+            "total": len(servicos),
+            "fonte": "banco_local_trinks",
+            "ultima_sincronizacao": trinks_api.ultima_sincronizacao.isoformat() if trinks_api.ultima_sincronizacao else None,
+            "servicos": [
+                {
+                    "nome": s.nome,
+                    "categoria": s.categoria,
+                    "preco": s.preco,
+                    "duracao_minutos": s.duracao_minutos
+                } for s in servicos
+            ]
+        })
+    finally:
+        db.close()
+
+
+@app.route('/trinks/profissionais', methods=['GET'])
+def trinks_profissionais():
+    """Lista profissionais do banco local (sincronizados do Trinks)"""
+    db = SessionLocal()
+    try:
+        from app.models.database import Profissional
+        profissionais = db.query(Profissional).filter(Profissional.ativo == True).all()
+        return jsonify({
+            "total": len(profissionais),
+            "profissionais": [{"nome": p.nome, "cargo": p.cargo} for p in profissionais]
+        })
+    finally:
+        db.close()
+
+
+@app.route('/trinks/agendamentos', methods=['GET'])
+def trinks_agendamentos():
+    """Lista agendamentos direto da API Trinks (tempo real)"""
+    from datetime import timedelta
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    em_30_dias = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    agendamentos = trinks_api.listar_agendamentos(data_inicio=hoje, data_fim=em_30_dias)
+    return jsonify({"total": len(agendamentos), "agendamentos": agendamentos})
+
+
+@app.route('/trinks/agendamentos', methods=['POST'])
+def criar_agendamento_trinks():
+    """Cria agendamento diretamente no Trinks"""
+    payload = request.get_json(force=True, silent=True)
+    if not payload:
+        return jsonify({"erro": "Payload inválido"}), 400
+    resultado = trinks_api.criar_agendamento(payload)
+    if resultado:
+        return jsonify({"status": "ok", "agendamento": resultado}), 201
+    return jsonify({"status": "erro", "mensagem": "Falha ao criar agendamento no Trinks"}), 500
+
+
+@app.route('/trinks/debug', methods=['GET'])
+def trinks_debug():
+    """Retorna resposta bruta da API Trinks para diagnóstico de mapeamento"""
+    import requests as req
+    from config import TRINKS_API_KEY, TRINKS_API_URL
+    headers = {
+        "Authorization": "ApiKey {}".format(TRINKS_API_KEY),
+        "Accept": "application/json"
+    }
+    resultado = {}
+    for endpoint in ["/v1/servicos", "/v1/profissionais", "/v1/agendamentos"]:
+        try:
+            r = req.get("{}{}".format(TRINKS_API_URL, endpoint), headers=headers, timeout=15)
+            resultado[endpoint] = {
+                "status_code": r.status_code,
+                "body": r.json() if r.ok else r.text[:500]
+            }
+        except Exception as e:
+            resultado[endpoint] = {"erro": str(e)}
+    return jsonify(resultado)
 
 
 if __name__ == '__main__':
