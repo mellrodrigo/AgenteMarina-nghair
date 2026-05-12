@@ -20,9 +20,9 @@ TRINKS_API_URL = os.getenv("TRINKS_API_URL", "https://api.trinks.com")
 TRINKS_ESTABELECIMENTO_ID = os.getenv("TRINKS_ESTABELECIMENTO_ID", "20181")
 TRINKS_SYNC_INTERVAL = int(os.getenv("TRINKS_SYNC_INTERVAL", "3600"))
 
-# Google Gemini
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# OpenAI GPT
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Evolution API / WhatsApp
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")

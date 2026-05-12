@@ -20,5 +20,8 @@ python-dotenv==1.0.0
 # Scheduler (sincronização Trinks automática)
 schedule==1.2.1
 
+# OpenAI GPT
+openai==1.30.5
+
 # Servidor WSGI (produção)
 gunicorn==21.2.0
