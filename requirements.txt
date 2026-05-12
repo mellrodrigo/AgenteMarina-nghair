@@ -21,7 +21,7 @@ python-dotenv==1.0.0
 schedule==1.2.1
 
 # OpenAI GPT
-openai==1.30.5
+openai>=2.0.0
 
 # Servidor WSGI (produção)
 gunicorn==21.2.0
