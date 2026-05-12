@@ -17,6 +17,13 @@ services:
       timeout: 5s
       retries: 10
 
+  evolution-redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    networks:
+      - marina-network
+    restart: unless-stopped
+
   evolution-api:
     image: atendai/evolution-api:v2.2.3
     container_name: evolution-api
@@ -46,6 +53,12 @@ services:
       - DATABASE_SAVE_DATA_CHATS=true
       - DATABASE_SAVE_DATA_LABELS=true
       - DATABASE_SAVE_DATA_HISTORIC=true
+      # Redis
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://evolution-redis:6379
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=false
+      - CACHE_LOCAL_ENABLED=false
       # Webhook global
       - WEBHOOK_GLOBAL_URL=${API_WEBHOOK_URL:-https://marina.nghair.com.br/webhook/whatsapp}
       - WEBHOOK_GLOBAL_ENABLED=true

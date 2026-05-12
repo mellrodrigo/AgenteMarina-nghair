@@ -94,7 +94,8 @@ def health_check():
 # ── Webhook WhatsApp ──────────────────────────────────────────
 
 @app.route('/webhook/whatsapp', methods=['POST'])
-def webhook_whatsapp():
+@app.route('/webhook/whatsapp/<path:event>', methods=['POST'])
+def webhook_whatsapp(event=None):
     try:
         data = request.get_json(force=True, silent=True)
         if not data:
