@@ -34,7 +34,6 @@ class EvolutionAPIClient:
             payload = {
                 "number": numero,
                 "text": mensagem,
-                "delay": 1200,
             }
             resp = requests.post(url, json=payload, headers=self._headers(), timeout=30)
             if resp.status_code in [200, 201]:
