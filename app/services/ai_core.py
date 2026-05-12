@@ -98,7 +98,33 @@ class AICoreMariana:
                     time.sleep(2 ** attempt)
         return None
 
-    # ── Prompt ────────────────────────────────────────────────
+    def _resposta_fallback(self, mensagem, cliente_info):
+        """Resposta baseada em regras quando Gemini está indisponível"""
+        nome = cliente_info.get("nome", "")
+        saudacao = "Olá{}! ".format(", " + nome if nome and nome != "Cliente" else "")
+        m = mensagem.lower()
+
+        if any(p in m for p in ["serviço", "serviços", "fazem", "oferecem", "tem"]):
+            if _servicos_cache:
+                top = _servicos_cache[:10]
+                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)
+                return "{}Alguns dos nossos serviços 💇‍♀️:\n{}\n\nQuer agendar ou saber mais sobre algum?".format(saudacao, lista)
+
+        if any(p in m for p in ["preço", "valor", "custa", "quanto"]):
+            if _servicos_cache:
+                top = _servicos_cache[:8]
+                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)
+                return "{}Nossos preços 💅:\n{}\n\nPosso agendar para você!".format(saudacao, lista)
+
+        if any(p in m for p in ["agendar", "marcar", "horário", "hora", "vaga", "disponível"]):
+            prof = self._profissionais_para_texto()
+            return "{}Adoraria agendar para você! ✨ Temos as profissionais: {}.\nQual serviço e data você prefere?".format(saudacao, prof)
+
+        if any(p in m for p in ["oi", "olá", "opa", "bom dia", "boa tarde", "boa noite"]):
+            return "{}Sou a Marina, assistente virtual do {} 💚 Como posso te ajudar hoje?".format(saudacao, self.salao_name)
+
+        return "{}Sou a Marina, do {} 😊 Posso ajudar com serviços, preços e agendamentos. O que você precisa?".format(saudacao, self.salao_name)
+
 
     def _construir_prompt(self, mensagem, cliente_info, historico_conversas=None):
         nome_cliente = cliente_info.get("nome", "Cliente")
@@ -160,8 +186,7 @@ class AICoreMariana:
             prompt = self._construir_prompt(mensagem, cliente_info, historico_conversas)
             resposta = self._chamar_gemini(prompt)
             if not resposta:
-                resposta = "Olá! Sou a {}, do {}. Como posso te ajudar hoje? 😊".format(
-                    self.marina_name, self.salao_name)
+                resposta = self._resposta_fallback(mensagem, cliente_info)
             intencao = self._classificar_intencao(mensagem)
             return resposta, intencao
         except Exception as e:
