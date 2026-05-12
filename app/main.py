@@ -116,7 +116,12 @@ def webhook_whatsapp():
         if '@g.us' in remote_jid:
             return jsonify({"status": "ok"}), 200
 
-        telefone = remote_jid.replace('@s.whatsapp.net', '').replace('@c.us', '')
+        # Suporte ao formato LID (@lid) do WhatsApp novo — usa sender como número real
+        if '@lid' in remote_jid:
+            sender = data.get('sender', '') or msg_data.get('sender', '')
+            telefone = sender.replace('@s.whatsapp.net', '').replace('@c.us', '')
+        else:
+            telefone = remote_jid.replace('@s.whatsapp.net', '').replace('@c.us', '')
 
         message = msg_data.get('message', {})
         texto = (
