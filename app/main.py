@@ -117,8 +117,12 @@ def webhook_whatsapp(event=None):
         if '@g.us' in remote_jid:
             return jsonify({"status": "ok"}), 200
 
-        # Evolution API v2 suporta LID nativamente — passa o remoteJid completo para envio
-        telefone = remote_jid.replace('@s.whatsapp.net', '').replace('@c.us', '')
+        # Para @lid (WhatsApp privacy): passa o JID completo; Baileys usa o cache de sessão para envio
+        # Para JIDs normais: extrai só o número
+        if '@lid' in remote_jid:
+            telefone = remote_jid
+        else:
+            telefone = remote_jid.replace('@s.whatsapp.net', '').replace('@c.us', '')
 
         message = msg_data.get('message', {})
         texto = (
