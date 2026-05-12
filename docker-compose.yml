@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   evolution-api:
-    image: atendai/evolution-api:v1.8.2
+    image: atendai/evolution-api:v2.2.3
     container_name: evolution-api
     ports:
       - "8080:8080"
@@ -24,25 +24,34 @@ services:
     environment:
       - SERVER_PORT=8080
       - SERVER_URL=http://localhost:8080
+      - CORS_ORIGIN=*
+      - CORS_METHODS=POST,GET,PUT,DELETE
+      - CORS_CREDENTIALS=true
       # Autenticação
       - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-1d0a8328a3cab91dea8f1276cbb95172}
-      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
       # MongoDB
       - DATABASE_ENABLED=true
-      - DATABASE_CONNECTION_URI=mongodb://evolution:evolution123@evolution-mongodb:27017/evolution?authSource=admin
-      - DATABASE_CONNECTION_CLIENT_NAME=evolution
+      - DATABASE_PROVIDER=mongodb
+      - DATABASE_CONNECTION_URI=mongodb://evolution:evolution123@evolution-mongodb:27017/?authSource=admin
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_v2
       - DATABASE_SAVE_DATA_INSTANCE=true
       - DATABASE_SAVE_DATA_NEW_MESSAGE=true
       - DATABASE_SAVE_MESSAGE_UPDATE=true
       - DATABASE_SAVE_DATA_CONTACTS=true
       - DATABASE_SAVE_DATA_CHATS=true
+      - DATABASE_SAVE_DATA_LABELS=true
+      - DATABASE_SAVE_DATA_HISTORIC=true
       # Webhook global
       - WEBHOOK_GLOBAL_URL=${API_WEBHOOK_URL:-https://marina.nghair.com.br/webhook/whatsapp}
       - WEBHOOK_GLOBAL_ENABLED=true
       - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
       - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
       - WEBHOOK_EVENTS_CONNECTION_UPDATE=true
+      - WEBHOOK_EVENTS_SEND_MESSAGE=false
+      - WEBHOOK_EVENTS_PRESENCE_UPDATE=false
+      - WEBHOOK_EVENTS_CONTACTS_UPDATE=false
+      - WEBHOOK_EVENTS_CHATS_UPDATE=false
       # QR Code
       - QRCODE_LIMIT=30
       - QRCODE_COLOR=#25D366

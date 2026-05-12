@@ -28,13 +28,13 @@ class EvolutionAPIClient:
         }
 
     def enviar_mensagem(self, instance, numero, mensagem):
-        """Envia mensagem de texto via WhatsApp"""
+        """Envia mensagem de texto via WhatsApp (Evolution API v2)"""
         try:
             url = "{}/message/sendText/{}".format(self.base_url, instance)
             payload = {
                 "number": numero,
-                "options": {"delay": 1200, "presence": "composing"},
-                "textMessage": {"text": mensagem}
+                "text": mensagem,
+                "delay": 1200,
             }
             resp = requests.post(url, json=payload, headers=self._headers(), timeout=30)
             if resp.status_code in [200, 201]:
