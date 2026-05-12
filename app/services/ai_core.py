@@ -57,12 +57,16 @@ TOOLS = [
             "name": "criar_agendamento",
             "description": (
                 "Cria o agendamento real no sistema Trinks. "
-                "Use SOMENTE quando o cliente já confirmou: serviço, data e horário. "
-                "Pergunte todos os dados antes de chamar esta função."
+                "Use SOMENTE quando o cliente já confirmou: nome completo, serviço, data e horário. "
+                "Pergunte TODOS os dados antes de chamar esta função, inclusive o nome completo do cliente."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "cliente_nome": {
+                        "type": "string",
+                        "description": "Nome completo do cliente (obrigatório, pergunte antes de agendar)"
+                    },
                     "servico_nome": {
                         "type": "string",
                         "description": "Nome exato do serviço (ex: Corte Feminino)"
@@ -76,7 +80,7 @@ TOOLS = [
                         "description": "Data e hora no formato YYYY-MM-DD HH:MM (ex: 2024-06-15 10:00)"
                     }
                 },
-                "required": ["servico_nome", "data_hora"]
+                "required": ["cliente_nome", "servico_nome", "data_hora"]
             }
         }
     }
@@ -298,7 +302,10 @@ class AICoreMariana:
             return {"erro": "Erro ao buscar dados do serviço/profissional"}
 
         # Busca ou cria cliente no Trinks
-        nome_cliente = cliente_info.get("nome", "Cliente")
+        nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
+        if not nome_cliente or nome_cliente.strip().lower() in ("cliente", ""):
+            return {"erro": "Preciso do nome completo do cliente para criar o agendamento. Por favor, pergunte o nome."}
+
         tel_cliente = telefone or ""
         cliente_id = None
 
@@ -307,17 +314,19 @@ class AICoreMariana:
         except Exception as e:
             logger.warning("Erro ao buscar/criar cliente Trinks: %s", str(e))
 
+        if not cliente_id:
+            return {"erro": "Não foi possível registrar o cliente no sistema. Tente novamente ou entre em contato com o salão."}
+
         # Monta payload correto conforme documentação Trinks
         payload = {
-            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+            "estabelecimentoId": int(TRINKS_ESTABELECIMENTO_ID),
+            "clienteId": cliente_id,
             "dataHora": data_hora_iso,
-            "servicos": [{"servicoId": servico_id, "duracao": duracao_minutos}],
+            "servicos": [{"servicoId": servico_id, "duracaoEmMinutos": duracao_minutos}],
             "observacao": "",
         }
         if profissional_id:
             payload["profissionalId"] = profissional_id
-        if cliente_id:
-            payload["clienteId"] = cliente_id
 
         logger.info("Criando agendamento Trinks: %s", payload)
         resultado = trinks_api.criar_agendamento(payload)
