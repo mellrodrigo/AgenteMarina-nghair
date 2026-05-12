@@ -1,18 +1,21 @@
-version: '3.8'
-
 services:
-  evolution-mongodb:
-    image: mongo:6
-    container_name: evolution-mongodb
+  evolution-postgres:
+    image: postgres:16-alpine
+    container_name: evolution-postgres
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=evolution
-      - MONGO_INITDB_ROOT_PASSWORD=evolution123
-      - MONGO_INITDB_DATABASE=evolution
+      - POSTGRES_USER=evolution
+      - POSTGRES_PASSWORD=evolution123
+      - POSTGRES_DB=evolution
     volumes:
-      - evolution-mongodb-data:/data/db
+      - evolution-postgres-data:/var/lib/postgresql/data
     networks:
       - marina-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   evolution-api:
     image: atendai/evolution-api:v2.2.3
@@ -20,7 +23,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - evolution-mongodb
+      evolution-postgres:
+        condition: service_healthy
     environment:
       - SERVER_PORT=8080
       - SERVER_URL=http://localhost:8080
@@ -30,9 +34,10 @@ services:
       # Autenticação
       - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-1d0a8328a3cab91dea8f1276cbb95172}
-      # Banco de dados (SQLite interno)
+      # PostgreSQL
       - DATABASE_ENABLED=true
-      - DATABASE_PROVIDER=sqlite
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://evolution:evolution123@evolution-postgres:5432/evolution?schema=public
       - DATABASE_CONNECTION_CLIENT_NAME=evolution_v2
       - DATABASE_SAVE_DATA_INSTANCE=true
       - DATABASE_SAVE_DATA_NEW_MESSAGE=true
@@ -61,7 +66,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  evolution-mongodb-data:
+  evolution-postgres-data:
   evolution-instances:
 
 networks:
