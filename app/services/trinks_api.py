@@ -9,12 +9,13 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 
-from config import TRINKS_API_KEY, TRINKS_API_URL
+from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
 
 logger = logging.getLogger(__name__)
 
 HEADERS = {
     "X-Api-Key": TRINKS_API_KEY,
+    "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
     "accept": "application/json",
     "Content-Type": "application/json",
 }

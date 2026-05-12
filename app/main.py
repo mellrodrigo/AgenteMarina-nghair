@@ -315,9 +315,10 @@ def criar_agendamento_trinks():
 def trinks_debug():
     """Retorna resposta bruta da API Trinks para diagnóstico de mapeamento"""
     import requests as req
-    from config import TRINKS_API_KEY, TRINKS_API_URL
+    from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
     headers = {
         "X-Api-Key": TRINKS_API_KEY,
+        "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
         "accept": "application/json",
     }
     resultado = {}

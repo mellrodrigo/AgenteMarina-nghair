@@ -17,6 +17,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/marina.db")
 # Trinks — API REST oficial
 TRINKS_API_KEY = os.getenv("TRINKS_API_KEY", "")
 TRINKS_API_URL = os.getenv("TRINKS_API_URL", "https://api.trinks.com")
+TRINKS_ESTABELECIMENTO_ID = os.getenv("TRINKS_ESTABELECIMENTO_ID", "20181")
 TRINKS_SYNC_INTERVAL = int(os.getenv("TRINKS_SYNC_INTERVAL", "3600"))
 
 # Google Gemini
