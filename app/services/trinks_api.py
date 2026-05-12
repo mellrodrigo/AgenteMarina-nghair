@@ -1,9 +1,18 @@
 """
 Cliente REST oficial da API Trinks
 Documentação: https://trinks.readme.io/reference/introducao
+
+Campos reais confirmados pela API (NGHair, estabelecimentoId=20181):
+
+  Serviços:    nome, descricao, categoria, preco, duracaoEmMinutos,
+               visivelParaCliente, id
+  Profissionais: nome, apelido, id, cpf
+  Agendamentos:  id, dataHoraInicio, duracaoEmMinutos, valor,
+               cliente{id,nome}, profissional{id,nome},
+               servico{id,nome}, status{id,nome},
+               observacoesDoCliente, observacoesDoEstabelecimento
 """
 import logging
-import os
 import requests
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -22,7 +31,6 @@ HEADERS = {
 
 
 class TrinksAPIClient:
-    """Cliente para a API REST oficial do Trinks"""
 
     def __init__(self):
         self.base_url = TRINKS_API_URL.rstrip("/")
@@ -30,16 +38,17 @@ class TrinksAPIClient:
         self.session.headers.update(HEADERS)
         self.ultima_sincronizacao: Optional[datetime] = None
 
+    # ── HTTP helpers ──────────────────────────────────────────
+
     def _get(self, endpoint: str, params: dict = None) -> Optional[Dict]:
-        """Executa GET na API e retorna JSON ou None em caso de erro"""
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        url = "{}/{}".format(self.base_url, endpoint.lstrip("/"))
         try:
             resp = self.session.get(url, params=params, timeout=30)
             if resp.status_code == 401:
-                logger.error("Trinks API: token inválido ou expirado (401)")
+                logger.error("Trinks API 401: token inválido")
                 return None
             if resp.status_code == 403:
-                logger.error("Trinks API: acesso negado (403)")
+                logger.error("Trinks API 403: acesso negado")
                 return None
             resp.raise_for_status()
             return resp.json()
@@ -51,8 +60,7 @@ class TrinksAPIClient:
             return None
 
     def _post(self, endpoint: str, payload: dict) -> Optional[Dict]:
-        """Executa POST na API e retorna JSON ou None em caso de erro"""
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        url = "{}/{}".format(self.base_url, endpoint.lstrip("/"))
         try:
             resp = self.session.post(url, json=payload, timeout=30)
             resp.raise_for_status()
@@ -61,120 +69,118 @@ class TrinksAPIClient:
             logger.error("Trinks API POST erro em %s: %s", url, str(e))
             return None
 
-    # ------------------------------------------------------------------
-    # Serviços
-    # ------------------------------------------------------------------
+    def _paginar(self, endpoint: str, params: dict = None) -> List[Dict]:
+        """Busca todas as páginas de um endpoint paginado"""
+        params = params or {}
+        params.setdefault("pageSize", 100)
+        params["page"] = 1
+        todos = []
+        while True:
+            dados = self._get(endpoint, params=params)
+            if not dados:
+                break
+            itens = dados.get("data", [])
+            todos.extend(itens)
+            total_pages = dados.get("totalPages", 1)
+            if params["page"] >= total_pages:
+                break
+            params["page"] += 1
+        return todos
 
-    def listar_servicos(self) -> List[Dict[str, Any]]:
-        """GET /v1/servicos — Retorna todos os serviços do estabelecimento"""
-        dados = self._get("/v1/servicos")
-        if not dados:
-            return []
-        itens = dados if isinstance(dados, list) else dados.get("data", dados.get("servicos", []))
+    # ── Serviços ──────────────────────────────────────────────
+
+    def listar_servicos(self, apenas_visiveis: bool = False) -> List[Dict[str, Any]]:
+        """GET /v1/servicos — campos reais: nome, preco, duracaoEmMinutos, categoria, visivelParaCliente"""
+        itens = self._paginar("/v1/servicos")
         servicos = []
         for item in itens:
+            visivel = item.get("visivelParaCliente", True)
+            if apenas_visiveis and not visivel:
+                continue
             servicos.append({
-                "nome": item.get("nome", item.get("name", "")),
-                "descricao": item.get("descricao", item.get("description", "")),
-                "categoria": item.get("categoria", item.get("category", "Geral")),
-                "preco": float(item.get("preco", item.get("price", 0)) or 0),
-                "duracao_minutos": int(item.get("duracao", item.get("duration_minutes", 60)) or 60),
-                "ativo": bool(item.get("ativo", item.get("active", True))),
+                "id": item.get("id"),
+                "nome": item.get("nome", ""),
+                "descricao": item.get("descricao", ""),
+                "categoria": item.get("categoria", "Geral"),
+                "preco": float(item.get("preco") or 0),
+                "duracao_minutos": int(item.get("duracaoEmMinutos") or 60),
+                "visivel_cliente": visivel,
+                "ativo": True,
             })
-        logger.info("Trinks API: %d serviços obtidos", len(servicos))
+        logger.info("Trinks: %d serviços obtidos", len(servicos))
         return servicos
 
-    # ------------------------------------------------------------------
-    # Profissionais
-    # ------------------------------------------------------------------
+    # ── Profissionais ─────────────────────────────────────────
 
     def listar_profissionais(self) -> List[Dict[str, Any]]:
-        """GET /v1/profissionais — Retorna todos os profissionais"""
-        dados = self._get("/v1/profissionais")
-        if not dados:
-            return []
-        itens = dados if isinstance(dados, list) else dados.get("data", dados.get("profissionais", []))
+        """GET /v1/profissionais — campos reais: nome, apelido, id"""
+        itens = self._paginar("/v1/profissionais")
         profissionais = []
         for item in itens:
+            nome_exibicao = item.get("apelido") or item.get("nome", "")
             profissionais.append({
-                "nome": item.get("nome", item.get("name", "")),
-                "cargo": item.get("cargo", item.get("role", "Profissional")),
-                "ativo": bool(item.get("ativo", item.get("active", True))),
+                "id": item.get("id"),
+                "nome": nome_exibicao,
+                "nome_completo": item.get("nome", ""),
+                "cargo": "Profissional",
+                "ativo": True,
             })
-        logger.info("Trinks API: %d profissionais obtidos", len(profissionais))
+        logger.info("Trinks: %d profissionais obtidos", len(profissionais))
         return profissionais
 
-    # ------------------------------------------------------------------
-    # Clientes
-    # ------------------------------------------------------------------
-
-    def listar_clientes(self, pagina: int = 1) -> List[Dict[str, Any]]:
-        """GET /v1/clientes — Retorna clientes do estabelecimento"""
-        dados = self._get("/v1/clientes", params={"page": pagina, "per_page": 100})
-        if not dados:
-            return []
-        itens = dados if isinstance(dados, list) else dados.get("data", dados.get("clientes", []))
-        clientes = []
-        for item in itens:
-            clientes.append({
-                "nome": item.get("nome", item.get("name", "")),
-                "telefone": item.get("telefone", item.get("phone", "")),
-                "email": item.get("email", ""),
-            })
-        logger.info("Trinks API: %d clientes obtidos (página %d)", len(clientes), pagina)
-        return clientes
-
-    # ------------------------------------------------------------------
-    # Agendamentos
-    # ------------------------------------------------------------------
+    # ── Agendamentos ──────────────────────────────────────────
 
     def listar_agendamentos(
         self,
         data_inicio: str = None,
         data_fim: str = None,
     ) -> List[Dict[str, Any]]:
-        """GET /v1/agendamentos — Retorna agendamentos no período"""
+        """GET /v1/agendamentos — campos reais aninhados: cliente.nome, profissional.nome,
+        servico.nome, status.nome, dataHoraInicio, valor, duracaoEmMinutos"""
         params = {}
         if data_inicio:
-            params["data_inicio"] = data_inicio
+            params["dataInicio"] = data_inicio
         if data_fim:
-            params["data_fim"] = data_fim
-        dados = self._get("/v1/agendamentos", params=params)
-        if not dados:
-            return []
-        itens = dados if isinstance(dados, list) else dados.get("data", dados.get("agendamentos", []))
+            params["dataFim"] = data_fim
+        itens = self._paginar("/v1/agendamentos", params=params)
         agendamentos = []
         for item in itens:
             agendamentos.append({
-                "cliente": item.get("cliente", item.get("client_name", "")),
-                "data_hora": item.get("data_hora", item.get("scheduled_at", "")),
-                "servico": item.get("servico", item.get("service_name", "")),
-                "profissional": item.get("profissional", item.get("professional_name", "")),
-                "status": item.get("status", "confirmado"),
-                "valor": float(item.get("valor", item.get("price", 0)) or 0),
+                "id": item.get("id"),
+                "cliente": item.get("cliente", {}).get("nome", ""),
+                "cliente_id": item.get("cliente", {}).get("id"),
+                "data_hora": item.get("dataHoraInicio", ""),
+                "duracao_minutos": item.get("duracaoEmMinutos", 0),
+                "servico": item.get("servico", {}).get("nome", ""),
+                "servico_id": item.get("servico", {}).get("id"),
+                "profissional": item.get("profissional", {}).get("nome", ""),
+                "profissional_id": item.get("profissional", {}).get("id"),
+                "status": item.get("status", {}).get("nome", ""),
+                "status_id": item.get("status", {}).get("id"),
+                "valor": float(item.get("valor") or 0),
+                "observacoes_cliente": item.get("observacoesDoCliente", ""),
+                "observacoes_salao": item.get("observacoesDoEstabelecimento", ""),
             })
-        logger.info("Trinks API: %d agendamentos obtidos", len(agendamentos))
+        logger.info("Trinks: %d agendamentos obtidos", len(agendamentos))
         return agendamentos
 
     def criar_agendamento(self, payload: dict) -> Optional[Dict]:
-        """POST /v1/agendamentos — Cria novo agendamento"""
+        """POST /v1/agendamentos"""
         resultado = self._post("/v1/agendamentos", payload)
         if resultado:
-            logger.info("Trinks API: agendamento criado")
+            logger.info("Trinks: agendamento criado id=%s", resultado.get("id"))
         return resultado
 
-    # ------------------------------------------------------------------
-    # Sincronização com banco local
-    # ------------------------------------------------------------------
+    # ── Sincronização com banco local ─────────────────────────
 
     def sincronizar_dados(self, db: Session) -> bool:
         """Sincroniza serviços e profissionais do Trinks para o banco local"""
         from app.models.database import Servico, Profissional
-
         try:
-            logger.info("Iniciando sincronização com API Trinks...")
+            logger.info("Sincronização Trinks iniciada...")
 
-            servicos_api = self.listar_servicos()
+            # Serviços — sincroniza todos (visíveis e não visíveis)
+            servicos_api = self.listar_servicos(apenas_visiveis=False)
             for s in servicos_api:
                 if not s["nome"]:
                     continue
@@ -182,7 +188,7 @@ class TrinksAPIClient:
                 if existente:
                     existente.preco = s["preco"]
                     existente.duracao_minutos = s["duracao_minutos"]
-                    existente.ativo = s["ativo"]
+                    existente.categoria = s["categoria"]
                     existente.data_atualizacao = datetime.utcnow()
                 else:
                     db.add(Servico(
@@ -191,38 +197,43 @@ class TrinksAPIClient:
                         categoria=s["categoria"],
                         preco=s["preco"],
                         duracao_minutos=s["duracao_minutos"],
-                        ativo=s["ativo"],
+                        ativo=True,
                     ))
 
+            # Profissionais — usa apelido como nome de exibição
             profissionais_api = self.listar_profissionais()
             for p in profissionais_api:
                 if not p["nome"]:
                     continue
                 existente = db.query(Profissional).filter(Profissional.nome == p["nome"]).first()
                 if existente:
-                    existente.cargo = p["cargo"]
-                    existente.ativo = p["ativo"]
                     existente.data_atualizacao = datetime.utcnow()
                 else:
-                    db.add(Profissional(nome=p["nome"], cargo=p["cargo"], ativo=p["ativo"]))
+                    db.add(Profissional(
+                        nome=p["nome"],
+                        cargo=p["cargo"],
+                        ativo=True,
+                    ))
 
             db.commit()
             self.ultima_sincronizacao = datetime.utcnow()
-            logger.info("Sincronização concluída: %d serviços, %d profissionais",
+            logger.info("Sync concluído: %d serviços, %d profissionais",
                         len(servicos_api), len(profissionais_api))
             return True
 
         except Exception as e:
             db.rollback()
-            logger.error("Erro na sincronização com Trinks: %s", str(e))
+            logger.error("Erro no sync Trinks: %s", str(e))
             return False
 
+    # ── Diagnóstico ───────────────────────────────────────────
+
     def testar_conexao(self) -> Dict[str, Any]:
-        """Verifica se o token está válido fazendo uma chamada leve"""
-        dados = self._get("/v1/servicos")
+        dados = self._get("/v1/servicos", params={"pageSize": 1})
         if dados is not None:
-            return {"ok": True, "mensagem": "Conexão com Trinks API bem-sucedida"}
-        return {"ok": False, "mensagem": "Falha na conexão com Trinks API — verifique TRINKS_API_KEY"}
+            total = dados.get("totalRecords", "?")
+            return {"ok": True, "mensagem": "Conexão OK — {} serviços no Trinks".format(total)}
+        return {"ok": False, "mensagem": "Falha na conexão — verifique TRINKS_API_KEY e TRINKS_ESTABELECIMENTO_ID"}
 
 
 trinks_api = TrinksAPIClient()
