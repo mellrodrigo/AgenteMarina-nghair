@@ -13,10 +13,8 @@ services:
       - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-1d0a8328a3cab91dea8f1276cbb95172}
       - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
-      # Banco de dados (SQLite — suportado no v1.x)
-      - DATABASE_ENABLED=true
-      - DATABASE_CONNECTION_URI=file:./evolution.db?mode=memory&cache=shared&_fk=1
-      - DATABASE_CONNECTION_CLIENT_NAME=evolution_exchange
+      # Armazenamento em arquivo local (sem banco externo)
+      - DATABASE_ENABLED=false
       # Persistência local
       - STORE_MESSAGES=true
       - STORE_MESSAGE_UP=true
