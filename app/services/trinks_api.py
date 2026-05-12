@@ -14,9 +14,9 @@ from config import TRINKS_API_KEY, TRINKS_API_URL
 logger = logging.getLogger(__name__)
 
 HEADERS = {
-    "Authorization": f"ApiKey {TRINKS_API_KEY}",
+    "X-Api-Key": TRINKS_API_KEY,
+    "accept": "application/json",
     "Content-Type": "application/json",
-    "Accept": "application/json",
 }
 
 

@@ -317,8 +317,8 @@ def trinks_debug():
     import requests as req
     from config import TRINKS_API_KEY, TRINKS_API_URL
     headers = {
-        "Authorization": "ApiKey {}".format(TRINKS_API_KEY),
-        "Accept": "application/json"
+        "X-Api-Key": TRINKS_API_KEY,
+        "accept": "application/json",
     }
     resultado = {}
     for endpoint in ["/v1/servicos", "/v1/profissionais", "/v1/agendamentos"]:
