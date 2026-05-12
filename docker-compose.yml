@@ -30,10 +30,9 @@ services:
       # Autenticação
       - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-1d0a8328a3cab91dea8f1276cbb95172}
-      # MongoDB
+      # Banco de dados (SQLite interno)
       - DATABASE_ENABLED=true
-      - DATABASE_PROVIDER=mongodb
-      - DATABASE_CONNECTION_URI=mongodb://evolution:evolution123@evolution-mongodb:27017/?authSource=admin
+      - DATABASE_PROVIDER=sqlite
       - DATABASE_CONNECTION_CLIENT_NAME=evolution_v2
       - DATABASE_SAVE_DATA_INSTANCE=true
       - DATABASE_SAVE_DATA_NEW_MESSAGE=true
