@@ -270,14 +270,17 @@ class AICoreMariana:
 
         # Busca IDs reais no Trinks
         servico_id = None
+        duracao_minutos = 60
         profissional_id = None
 
         try:
+            from config import TRINKS_ESTABELECIMENTO_ID
             servicos = trinks_api.listar_servicos()
             for s in servicos:
                 if servico_nome.lower() in s["nome"].lower():
                     servico_id = s["id"]
                     servico_nome = s["nome"]  # usa nome exato
+                    duracao_minutos = int(s.get("duracao_minutos") or 60)
                     break
 
             if not servico_id:
@@ -304,19 +307,17 @@ class AICoreMariana:
         except Exception as e:
             logger.warning("Erro ao buscar/criar cliente Trinks: %s", str(e))
 
-        # Monta payload e cria agendamento
+        # Monta payload correto conforme documentação Trinks
         payload = {
-            "servicoId": servico_id,
-            "dataHoraInicio": data_hora_iso,
+            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+            "dataHora": data_hora_iso,
+            "servicos": [{"servicoId": servico_id, "duracao": duracao_minutos}],
+            "observacao": "",
         }
         if profissional_id:
             payload["profissionalId"] = profissional_id
         if cliente_id:
             payload["clienteId"] = cliente_id
-        else:
-            payload["clienteNome"] = nome_cliente
-            if tel_cliente:
-                payload["clienteTelefone"] = "".join(filter(str.isdigit, tel_cliente))
 
         logger.info("Criando agendamento Trinks: %s", payload)
         resultado = trinks_api.criar_agendamento(payload)

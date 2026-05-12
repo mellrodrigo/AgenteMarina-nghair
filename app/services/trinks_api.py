@@ -139,12 +139,9 @@ class TrinksAPIClient:
 
     # ── Clientes ──────────────────────────────────────────────
 
-    def listar_clientes(self, telefone: str = None, nome: str = None) -> List[Dict]:
-        """GET /v1/clientes — busca por telefone ou nome"""
-        params = {}
-        if telefone:
-            tel_clean = "".join(filter(str.isdigit, telefone))
-            params["telefone"] = tel_clean
+    def listar_clientes(self, nome: str = None) -> List[Dict]:
+        """GET /v1/clientes?estabelecimentoId=...&nome=... — busca por nome"""
+        params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID}
         if nome:
             params["nome"] = nome
         dados = self._get("/v1/clientes", params=params)
@@ -155,21 +152,25 @@ class TrinksAPIClient:
         return dados.get("data", [])
 
     def criar_cliente(self, nome: str, telefone: str) -> Optional[Dict]:
-        """POST /v1/clientes — cria novo cliente no Trinks"""
+        """POST /v1/clientes — payload correto com telefones[]"""
         tel_clean = "".join(filter(str.isdigit, telefone))
-        payload = {"nome": nome, "telefone": tel_clean}
+        payload = {
+            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+            "nome": nome,
+            "telefones": [{"numero": tel_clean, "tipo": "celular"}] if tel_clean else [],
+        }
         resultado = self._post("/v1/clientes", payload)
         if resultado:
-            logger.info("Trinks: cliente criado nome=%s", nome)
+            logger.info("Trinks: cliente criado nome=%s id=%s", nome, resultado.get("id"))
         return resultado
 
     def buscar_ou_criar_cliente(self, nome: str, telefone: str) -> Optional[int]:
-        """Retorna clienteId do Trinks, criando se necessário"""
-        if telefone:
-            clientes = self.listar_clientes(telefone=telefone)
+        """Retorna clienteId do Trinks buscando por nome; cria se não encontrar"""
+        if nome and nome != "Cliente":
+            clientes = self.listar_clientes(nome=nome)
             if clientes:
                 cid = clientes[0].get("id")
-                logger.info("Trinks: cliente existente id=%s", cid)
+                logger.info("Trinks: cliente existente id=%s nome=%s", cid, nome)
                 return cid
         resultado = self.criar_cliente(nome, telefone)
         if resultado:
