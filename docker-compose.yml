@@ -1,11 +1,26 @@
 version: '3.8'
 
 services:
+  evolution-mongodb:
+    image: mongo:6
+    container_name: evolution-mongodb
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=evolution
+      - MONGO_INITDB_ROOT_PASSWORD=evolution123
+      - MONGO_INITDB_DATABASE=evolution
+    volumes:
+      - evolution-mongodb-data:/data/db
+    networks:
+      - marina-network
+    restart: unless-stopped
+
   evolution-api:
     image: atendai/evolution-api:v1.8.2
     container_name: evolution-api
     ports:
       - "8080:8080"
+    depends_on:
+      - evolution-mongodb
     environment:
       - SERVER_PORT=8080
       - SERVER_URL=http://localhost:8080
@@ -13,14 +28,15 @@ services:
       - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-1d0a8328a3cab91dea8f1276cbb95172}
       - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
-      # Armazenamento em arquivo local (sem banco externo)
-      - DATABASE_ENABLED=false
-      # Persistência local
-      - STORE_MESSAGES=true
-      - STORE_MESSAGE_UP=true
-      - STORE_CONTACTS=true
-      - STORE_CHATS=true
-      - STORE_CLEANING_INTERVAL=7200
+      # MongoDB
+      - DATABASE_ENABLED=true
+      - DATABASE_CONNECTION_URI=mongodb://evolution:evolution123@evolution-mongodb:27017/evolution?authSource=admin
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
       # Webhook global
       - WEBHOOK_GLOBAL_URL=${API_WEBHOOK_URL:-https://marina.nghair.com.br/webhook/whatsapp}
       - WEBHOOK_GLOBAL_ENABLED=true
@@ -31,15 +47,14 @@ services:
       - QRCODE_LIMIT=30
       - QRCODE_COLOR=#25D366
     volumes:
-      - evolution-data:/evolution/instances
-      - evolution-store:/evolution/store
+      - evolution-instances:/evolution/instances
     networks:
       - marina-network
     restart: unless-stopped
 
 volumes:
-  evolution-data:
-  evolution-store:
+  evolution-mongodb-data:
+  evolution-instances:
 
 networks:
   marina-network:
