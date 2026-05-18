@@ -9,6 +9,7 @@ import sys
 import threading
 import schedule
 import time
+from collections import OrderedDict
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -37,6 +38,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 criar_tabelas()
 
+# Cache de IDs de mensagens já processadas (deduplicação)
+_mensagens_processadas = OrderedDict()
+_MSG_CACHE_MAX = 500
+_msg_lock = threading.Lock()
+
 
 # ── Sync Trinks automático ────────────────────────────────────
 
@@ -57,6 +63,7 @@ def _executar_sync():
 
 
 def _loop_agendador():
+    """Loop do scheduler em thread separada"""
     intervalo_horas = max(1, TRINKS_SYNC_INTERVAL // 3600)
     schedule.every(intervalo_horas).hours.do(_executar_sync)
     logger.info("Agendador Trinks: sync a cada %dh", intervalo_horas)
@@ -66,6 +73,7 @@ def _loop_agendador():
 
 
 def _iniciar_sync_background():
+    """Sync inicial + inicia loop agendado"""
     threading.Thread(target=_executar_sync, daemon=True).start()
     threading.Thread(target=_loop_agendador, daemon=True).start()
 
@@ -74,7 +82,7 @@ _iniciar_sync_background()
 logger.info("Marina iniciada!")
 
 
-# ── Health ────────────────────────────────────────────────────
+# ── Health ────────────────────────────────────────────────
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -109,6 +117,17 @@ def webhook_whatsapp(event=None):
 
         key = msg_data.get('key', {})
         remote_jid = key.get('remoteJid', '')
+        msg_id = key.get('id', '')
+
+        # Deduplicação: ignora mensagem já processada
+        if msg_id:
+            with _msg_lock:
+                if msg_id in _mensagens_processadas:
+                    logger.info("Mensagem duplicada ignorada: %s", msg_id)
+                    return jsonify({"status": "ok"}), 200
+                _mensagens_processadas[msg_id] = True
+                if len(_mensagens_processadas) > _MSG_CACHE_MAX:
+                    _mensagens_processadas.popitem(last=False)
 
         if '@g.us' in remote_jid:
             return jsonify({"status": "ok"}), 200
@@ -156,6 +175,7 @@ def webhook_whatsapp(event=None):
 
 
 def processar_audio_background(telefone, remote_jid, msg_data, push_name=''):
+    """Extrai base64 do payload, transcreve com Whisper e processa como texto normal."""
     try:
         audio_bytes, mimetype = evolution_api_client.extrair_audio_base64(msg_data)
         if not audio_bytes:
@@ -230,7 +250,7 @@ def processar_mensagem_background(telefone, texto, remote_jid, push_name=''):
         db.close()
 
 
-# ── Clientes ──────────────────────────────────────────────────
+# ── Clientes ────────────────────────────────────────────────
 
 @app.route('/clientes', methods=['GET'])
 def listar_clientes():
@@ -245,7 +265,7 @@ def listar_clientes():
         db.close()
 
 
-# ── Status ────────────────────────────────────────────────────
+# ── Status ────────────────────────────────────────────────
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -263,7 +283,7 @@ def status():
         db.close()
 
 
-# ── Trinks API ────────────────────────────────────────────────
+# ── Trinks API ──────────────────────────────────────────────
 
 @app.route('/trinks/status', methods=['GET'])
 def trinks_status():
@@ -296,6 +316,7 @@ def trinks_sync():
 
 @app.route('/trinks/servicos', methods=['GET'])
 def trinks_servicos():
+    """Lista serviços do banco local (sincronizados do Trinks)"""
     db = SessionLocal()
     try:
         from app.models.database import Servico
@@ -319,6 +340,7 @@ def trinks_servicos():
 
 @app.route('/trinks/profissionais', methods=['GET'])
 def trinks_profissionais():
+    """Lista profissionais do banco local (sincronizados do Trinks)"""
     db = SessionLocal()
     try:
         from app.models.database import Profissional
@@ -333,6 +355,7 @@ def trinks_profissionais():
 
 @app.route('/trinks/agendamentos', methods=['GET'])
 def trinks_agendamentos():
+    """Lista agendamentos direto da API Trinks (tempo real)"""
     from datetime import timedelta
     hoje = datetime.now().strftime("%Y-%m-%d")
     em_30_dias = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
@@ -342,6 +365,7 @@ def trinks_agendamentos():
 
 @app.route('/trinks/agendamentos', methods=['POST'])
 def criar_agendamento_trinks():
+    """Cria agendamento diretamente no Trinks"""
     payload = request.get_json(force=True, silent=True)
     if not payload:
         return jsonify({"erro": "Payload inválido"}), 400
@@ -353,6 +377,7 @@ def criar_agendamento_trinks():
 
 @app.route('/trinks/debug', methods=['GET'])
 def trinks_debug():
+    """Retorna resposta bruta da API Trinks para diagnóstico de mapeamento"""
     import requests as req
     from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
     headers = {
@@ -375,6 +400,7 @@ def trinks_debug():
 
 @app.route('/trinks/debug/servico', methods=['GET'])
 def debug_raw_servico():
+    """Retorna campos RAW de um serviço específico do Trinks para diagnóstico"""
     nome = request.args.get('nome', '')
     servicos = trinks_api.listar_servicos()
     if nome:
@@ -399,6 +425,7 @@ def debug_raw_servico():
 
 @app.route('/trinks/debug/profissional', methods=['GET'])
 def debug_raw_profissional():
+    """Retorna campos RAW de profissional específico para diagnóstico"""
     import requests as req
     from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
     nome = request.args.get('nome', '')
@@ -423,6 +450,7 @@ def debug_raw_profissional():
 
 @app.route('/trinks/debug/cliente', methods=['GET'])
 def debug_busca_cliente():
+    """Diagnóstico completo de busca de cliente no Trinks"""
     telefone = request.args.get('telefone', '')
     nome = request.args.get('nome', '')
 
