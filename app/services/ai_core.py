@@ -394,6 +394,7 @@ class AICoreMariana:
 
         servico_id = None
         duracao_minutos = 60
+        servico_raw = {}
         try:
             servicos = trinks_api.listar_servicos()
             for s in servicos:
@@ -401,6 +402,7 @@ class AICoreMariana:
                     servico_id = s["id"]
                     servico_nome = s["nome"]
                     duracao_minutos = int(s.get("duracao_minutos") or 60)
+                    servico_raw = s.get("_raw", {})
                     break
         except Exception as e:
             logger.error("Erro buscando serviço: %s", str(e))
@@ -408,7 +410,11 @@ class AICoreMariana:
         if not servico_id:
             _debug("❌ Serviço não encontrado: '{}'".format(servico_nome))
             return {"erro": "Serviço '{}' não encontrado no sistema.".format(servico_nome)}
-        _debug("✅ Serviço: {} | id={} | duração={}min".format(servico_nome, servico_id, duracao_minutos))
+
+        # Log ALL raw fields to diagnose ServicoEstabelecimentoId error
+        raw_chaves = list(servico_raw.keys()) if servico_raw else []
+        _debug("✅ Serviço: {} | id={} | duração={}min | campos_raw={}".format(
+            servico_nome, servico_id, duracao_minutos, raw_chaves))
 
         # 3. Busca profissional — checa apelido e nome completo
         profissional_id = None
@@ -522,18 +528,34 @@ class AICoreMariana:
                 }
 
         # 6. Cria agendamento
+        # Trinks pode usar "duracao" ou "duracaoEmMinutos" dependendo da versão
+        servico_item = {
+            "servicoId": servico_id,
+            "duracao": duracao_minutos,
+            "duracaoEmMinutos": duracao_minutos,
+        }
+        # Se o raw tiver um campo específico de estabelecimento, inclui também
+        for campo in ("estabelecimentoServicoId", "estabelecimentoId"):
+            if campo in servico_raw:
+                servico_item[campo] = servico_raw[campo]
+
+        try:
+            estab_int = int(TRINKS_ESTABELECIMENTO_ID)
+        except (ValueError, TypeError):
+            estab_int = TRINKS_ESTABELECIMENTO_ID
+
         payload = {
-            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+            "estabelecimentoId": estab_int,
             "clienteId": cliente_id,
             "profissionalId": profissional_id,
             "dataHora": data_hora_iso,
-            "servicos": [{"servicoId": servico_id, "duracao": duracao_minutos}],
+            "servicos": [servico_item],
             "observacao": "",
         }
 
         logger.info("Criando agendamento Trinks: %s", payload)
-        _debug("📤 Enviando agendamento: clienteId={} | servicoId={} | dataHora={}".format(
-            cliente_id, servico_id, data_hora_iso))
+        _debug("📤 Enviando: estab={} | clienteId={} | profId={} | servicoId={} | dur={}min | dataHora={}".format(
+            estab_int, cliente_id, profissional_id, servico_id, duracao_minutos, data_hora_iso))
 
         resultado = trinks_api.criar_agendamento(payload)
 

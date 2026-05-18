@@ -389,6 +389,31 @@ def trinks_debug():
     return jsonify(resultado)
 
 
+@app.route('/trinks/debug/servico', methods=['GET'])
+def debug_raw_servico():
+    """Retorna campos RAW de um serviço específico do Trinks para diagnóstico"""
+    nome = request.args.get('nome', '')
+    servicos = trinks_api.listar_servicos()
+    if nome:
+        encontrados = [s for s in servicos if nome.lower() in s["nome"].lower()]
+    else:
+        encontrados = servicos[:5]
+    return jsonify({
+        "total": len(encontrados),
+        "servicos": [
+            {
+                "nome": s["nome"],
+                "id": s["id"],
+                "duracao_minutos": s["duracao_minutos"],
+                "preco": s["preco"],
+                "campos_raw": list(s.get("_raw", {}).keys()),
+                "raw_completo": s.get("_raw", {}),
+            }
+            for s in encontrados
+        ]
+    })
+
+
 @app.route('/trinks/debug/cliente', methods=['GET'])
 def debug_busca_cliente():
     """Diagnóstico completo de busca de cliente no Trinks"""

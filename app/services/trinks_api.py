@@ -71,7 +71,7 @@ class TrinksAPIClient:
                 logger.warning("Trinks endpoint não encontrado: %s", endpoint)
                 return None
             if not resp.ok:
-                logger.error("Trinks POST %s: %s %s", endpoint, resp.status_code, resp.text[:300])
+                logger.error("Trinks POST %s: %s %s", endpoint, resp.status_code, resp.text[:1000])
                 return None
             return resp.json()
         except requests.exceptions.RequestException as e:
@@ -101,6 +101,8 @@ class TrinksAPIClient:
     def listar_servicos(self, apenas_visiveis: bool = False) -> List[Dict[str, Any]]:
         """GET /v1/servicos — campos reais: nome, preco, duracaoEmMinutos, categoria, visivelParaCliente"""
         itens = self._paginar("/v1/servicos")
+        if itens:
+            logger.debug("Trinks serviço RAW exemplo: %s", itens[0])
         servicos = []
         for item in itens:
             visivel = item.get("visivelParaCliente", True)
@@ -115,6 +117,7 @@ class TrinksAPIClient:
                 "duracao_minutos": int(item.get("duracaoEmMinutos") or 60),
                 "visivel_cliente": visivel,
                 "ativo": True,
+                "_raw": item,
             })
         logger.info("Trinks: %d serviços obtidos", len(servicos))
         return servicos
