@@ -112,12 +112,14 @@ def webhook_whatsapp(event=None):
             return jsonify({"status": "ok"}), 200
 
         msg_data = data.get('data', {})
-        if msg_data.get('direction') == 'out':
-            return jsonify({"status": "ok"}), 200
 
         key = msg_data.get('key', {})
         remote_jid = key.get('remoteJid', '')
         msg_id = key.get('id', '')
+
+        # Ignora mensagens enviadas pela própria Marina (evita loop)
+        if key.get('fromMe') or msg_data.get('direction') == 'out':
+            return jsonify({"status": "ok"}), 200
 
         # Deduplicação: ignora mensagem já processada
         if msg_id:
@@ -147,7 +149,7 @@ def webhook_whatsapp(event=None):
         )
 
         audio_msg = message.get('audioMessage') or message.get('pttMessage')
-        if not texto and audio_msg and not key.get('fromMe'):
+        if not texto and audio_msg:
             logger.info("Áudio recebido de %s (%s) — transcrevendo...", telefone, push_name)
             threading.Thread(
                 target=processar_audio_background,
