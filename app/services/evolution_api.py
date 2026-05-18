@@ -122,7 +122,7 @@ class EvolutionAPIClient:
         try:
             logger.info("Tentando /chat/getBase64FromMediaMessage para áudio...")
             resp = requests.post(url, json=payload, headers=self._headers(), timeout=60)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 201):
                 data = resp.json()
                 b64 = (data.get("base64") or
                        data.get("data", {}).get("base64", "") or
