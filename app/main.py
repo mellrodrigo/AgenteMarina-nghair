@@ -118,6 +118,9 @@ def webhook_whatsapp(event=None):
         if '@g.us' in remote_jid:
             return jsonify({"status": "ok"}), 200
 
+        # Nome do contato vindo do WhatsApp
+        push_name = msg_data.get('pushName') or msg_data.get('push_name') or ''
+
         # Para @lid (WhatsApp privacy): passa o JID completo; Baileys usa o cache de sessão para envio
         # Para JIDs normais: extrai só o número
         if '@lid' in remote_jid:
@@ -135,11 +138,10 @@ def webhook_whatsapp(event=None):
         # Áudio (ptt = push-to-talk / nota de voz)
         audio_msg = message.get('audioMessage') or message.get('pttMessage')
         if not texto and audio_msg and not key.get('fromMe'):
-            logger.info("AUDIO_PAYLOAD: %s", json.dumps(audio_msg)[:500])
-            logger.info("Áudio recebido de %s — transcrevendo...", telefone)
+            logger.info("Áudio recebido de %s (%s) — transcrevendo...", telefone, push_name)
             threading.Thread(
                 target=processar_audio_background,
-                args=(telefone, remote_jid, msg_data),
+                args=(telefone, remote_jid, msg_data, push_name),
                 daemon=True
             ).start()
             return jsonify({"status": "ok"}), 200
@@ -147,11 +149,11 @@ def webhook_whatsapp(event=None):
         if not texto or not telefone:
             return jsonify({"status": "ok"}), 200
 
-        logger.info("Mensagem de %s: %s", telefone, texto[:100])
+        logger.info("Mensagem de %s (%s): %s", telefone, push_name, texto[:100])
 
         threading.Thread(
             target=processar_mensagem_background,
-            args=(telefone, texto, remote_jid),
+            args=(telefone, texto, remote_jid, push_name),
             daemon=True
         ).start()
 
@@ -162,7 +164,7 @@ def webhook_whatsapp(event=None):
         return jsonify({"status": "error"}), 500
 
 
-def processar_audio_background(telefone, remote_jid, msg_data):
+def processar_audio_background(telefone, remote_jid, msg_data, push_name=''):
     """Extrai base64 do payload, transcreve com Whisper e processa como texto normal."""
     try:
         audio_bytes, mimetype = evolution_api_client.extrair_audio_base64(msg_data)
@@ -185,16 +187,19 @@ def processar_audio_background(telefone, remote_jid, msg_data):
             return
 
         logger.info("Áudio de %s transcrito: %s", telefone, texto[:100])
-        processar_mensagem_background(telefone, texto, remote_jid)
+        processar_mensagem_background(telefone, texto, remote_jid, push_name)
 
     except Exception as e:
         logger.error("Erro ao processar áudio de %s: %s", telefone, str(e))
 
 
-def processar_mensagem_background(telefone, texto, remote_jid):
+def processar_mensagem_background(telefone, texto, remote_jid, push_name=''):
     db = SessionLocal()
     try:
-        cliente = cliente_service.buscar_ou_criar_cliente(db, telefone)
+        cliente = cliente_service.buscar_ou_criar_cliente(db, telefone, nome=push_name or None)
+        # Atualiza nome se ainda estava como "Cliente" e agora temos o pushName
+        if push_name and (not cliente.nome or cliente.nome == 'Cliente'):
+            cliente_service.atualizar_cliente(db, cliente.id, nome=push_name)
         contexto = cliente_service.obter_contexto_cliente(db, cliente.id)
         historico = cliente_service.obter_historico_conversas(db, cliente.id, limite=5)
 
