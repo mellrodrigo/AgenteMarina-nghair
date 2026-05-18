@@ -512,10 +512,10 @@ class AICoreMariana:
 
         # 6. Cria agendamento
         payload = {
-            "estabelecimentoId": int(TRINKS_ESTABELECIMENTO_ID),
+            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
             "clienteId": cliente_id,
             "dataHora": data_hora_iso,
-            "servicos": [{"servicoId": servico_id, "duracaoEmMinutos": duracao_minutos}],
+            "servicos": [{"servicoId": servico_id, "duracao": duracao_minutos}],
             "observacao": "",
         }
         if profissional_id:
