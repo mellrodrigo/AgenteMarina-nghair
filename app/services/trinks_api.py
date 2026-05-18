@@ -178,37 +178,41 @@ class TrinksAPIClient:
         return resultado
 
     def buscar_candidatos_cliente(self, nome: str, telefone: str) -> List[Dict]:
-        """Busca clientes por telefone, nome completo, primeiro nome e sobrenome.
-        Retorna lista única de candidatos sem duplicatas."""
-        candidatos = {}
+        """Busca clientes combinando nome + telefone.
+        Estratégia: tenta do mais específico ao mais genérico."""
+        tel_trinks = self._tel_para_trinks(telefone) if telefone else ""
+        primeiro_nome = nome.strip().split()[0] if nome and nome != "Cliente" else ""
 
-        def _adicionar(clientes):
-            for c in clientes:
-                cid = c.get("id")
-                if cid and cid not in candidatos:
-                    candidatos[cid] = c
+        # 1. Mais específico: primeiro nome + telefone juntos
+        if primeiro_nome and tel_trinks:
+            resultado = self.listar_clientes(nome=primeiro_nome, telefone=tel_trinks)
+            if resultado:
+                logger.info("Trinks: %d cliente(s) por nome+telefone", len(resultado))
+                return resultado
 
-        # 1. Busca por telefone (mais confiável)
-        if telefone:
-            tel_trinks = self._tel_para_trinks(telefone)
-            if tel_trinks:
-                _adicionar(self.listar_clientes(telefone=tel_trinks))
-                logger.info("Trinks busca por telefone=%s: %d resultado(s)", tel_trinks, len(candidatos))
+        # 2. Só telefone
+        if tel_trinks:
+            resultado = self.listar_clientes(telefone=tel_trinks)
+            if resultado:
+                logger.info("Trinks: %d cliente(s) só por telefone", len(resultado))
+                return resultado
 
-        # 2. Busca por nome completo
+        # 3. Só nome completo
         if nome and nome != "Cliente":
-            _adicionar(self.listar_clientes(nome=nome))
+            resultado = self.listar_clientes(nome=nome)
+            if resultado:
+                logger.info("Trinks: %d cliente(s) só por nome", len(resultado))
+                return resultado
 
-            # 3. Busca por primeiro nome
-            partes = nome.strip().split()
-            if len(partes) > 1:
-                _adicionar(self.listar_clientes(nome=partes[0]))
-                # 4. Busca por sobrenome
-                _adicionar(self.listar_clientes(nome=partes[-1]))
+        # 4. Só primeiro nome
+        if primeiro_nome and primeiro_nome != nome:
+            resultado = self.listar_clientes(nome=primeiro_nome)
+            if resultado:
+                logger.info("Trinks: %d cliente(s) por primeiro nome", len(resultado))
+                return resultado
 
-        logger.info("Trinks: %d candidato(s) encontrado(s) para nome='%s' tel='%s'",
-                    len(candidatos), nome, telefone)
-        return list(candidatos.values())
+        logger.info("Trinks: nenhum cliente encontrado para nome='%s' tel='%s'", nome, telefone)
+        return []
 
     def buscar_ou_criar_cliente(self, nome: str, telefone: str) -> Optional[int]:
         """Atalho simples: retorna id do primeiro candidato ou cria novo."""
