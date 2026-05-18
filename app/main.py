@@ -389,6 +389,63 @@ def trinks_debug():
     return jsonify(resultado)
 
 
+@app.route('/trinks/debug/cliente', methods=['GET'])
+def debug_busca_cliente():
+    """Diagnóstico de busca de cliente no Trinks por telefone e nome"""
+    telefone = request.args.get('telefone', '')
+    nome = request.args.get('nome', '')
+
+    if not telefone and not nome:
+        return jsonify({"erro": "Informe ?telefone=... ou ?nome=..."}), 400
+
+    resultado = {"telefone_buscado": telefone, "nome_buscado": nome}
+
+    # Busca por nome direta
+    if nome:
+        clientes_nome = trinks_api.listar_clientes(nome=nome)
+        resultado["busca_por_nome"] = {
+            "total": len(clientes_nome),
+            "clientes": clientes_nome[:5]
+        }
+
+    # Busca por telefone paginada — mostra detalhes de comparação
+    if telefone:
+        from config import TRINKS_ESTABELECIMENTO_ID
+        tel_clean = "".join(filter(str.isdigit, telefone))
+        tel_sem_ddi = tel_clean[2:] if tel_clean.startswith("55") and len(tel_clean) > 10 else tel_clean
+        resultado["telefone_clean"] = tel_clean
+        resultado["telefone_sem_ddi"] = tel_sem_ddi
+
+        comparacoes = []
+        params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID, "pageSize": 100, "page": 1}
+        dados = trinks_api._get("/v1/clientes", params=params)
+        clientes = dados if isinstance(dados, list) else (dados.get("data", []) if dados else [])
+
+        for c in clientes[:50]:
+            fones = c.get("telefones", [])
+            for t in fones:
+                num = "".join(filter(str.isdigit, str(t.get("numero", ""))))
+                match = bool(num and (num == tel_clean or num == tel_sem_ddi or
+                             tel_sem_ddi[-8:] == num[-8:]))
+                comparacoes.append({
+                    "cliente_id": c.get("id"),
+                    "cliente_nome": c.get("nome"),
+                    "telefone_trinks": t.get("numero"),
+                    "telefone_trinks_clean": num,
+                    "match": match
+                })
+
+        encontrado = next((c for c in comparacoes if c["match"]), None)
+        resultado["busca_por_telefone"] = {
+            "total_clientes_na_pagina": len(clientes),
+            "total_pages": dados.get("totalPages", 1) if isinstance(dados, dict) else 1,
+            "encontrado": encontrado,
+            "comparacoes_amostra": [c for c in comparacoes if c["telefone_trinks_clean"]][:10]
+        }
+
+    return jsonify(resultado)
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     logger.info("Iniciando Marina na porta %d...", port)
