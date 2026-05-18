@@ -137,7 +137,7 @@ def webhook_whatsapp(event=None):
             logger.info("Áudio recebido de %s — transcrevendo...", telefone)
             threading.Thread(
                 target=processar_audio_background,
-                args=(telefone, remote_jid, msg_data.get('key', {})),
+                args=(telefone, remote_jid, msg_data),
                 daemon=True
             ).start()
             return jsonify({"status": "ok"}), 200
@@ -160,10 +160,10 @@ def webhook_whatsapp(event=None):
         return jsonify({"status": "error"}), 500
 
 
-def processar_audio_background(telefone, remote_jid, message_key):
+def processar_audio_background(telefone, remote_jid, msg_data):
     """Baixa áudio, transcreve com Whisper e processa como texto normal."""
     try:
-        audio_bytes = evolution_api_client.baixar_midia(WHATSAPP_INSTANCE_NAME, message_key)
+        audio_bytes = evolution_api_client.baixar_midia(WHATSAPP_INSTANCE_NAME, msg_data)
         if not audio_bytes:
             logger.warning("Não foi possível baixar áudio de %s", telefone)
             evolution_api_client.enviar_mensagem(
