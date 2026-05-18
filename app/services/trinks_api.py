@@ -164,14 +164,50 @@ class TrinksAPIClient:
             logger.info("Trinks: cliente criado nome=%s id=%s", nome, resultado.get("id"))
         return resultado
 
+    def buscar_cliente_por_telefone(self, telefone: str) -> Optional[Dict]:
+        """Pagina todos os clientes e filtra por telefone localmente.
+        A API Trinks não suporta filtro por telefone — comparação feita aqui."""
+        tel_clean = "".join(filter(str.isdigit, telefone))
+        tel_sem_ddi = tel_clean[2:] if tel_clean.startswith("55") and len(tel_clean) > 10 else tel_clean
+
+        params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID, "pageSize": 100, "page": 1}
+        pagina = 1
+        while True:
+            params["page"] = pagina
+            dados = self._get("/v1/clientes", params=params)
+            if not dados:
+                break
+            clientes = dados if isinstance(dados, list) else dados.get("data", [])
+            for c in clientes:
+                for t in c.get("telefones", []):
+                    num = "".join(filter(str.isdigit, str(t.get("numero", ""))))
+                    if num and (num == tel_clean or num == tel_sem_ddi or
+                                tel_sem_ddi[-8:] == num[-8:]):
+                        logger.info("Trinks: cliente encontrado por telefone id=%s nome=%s", c.get("id"), c.get("nome"))
+                        return c
+            total_pages = dados.get("totalPages", 1) if isinstance(dados, dict) else 1
+            if pagina >= total_pages:
+                break
+            pagina += 1
+        return None
+
     def buscar_ou_criar_cliente(self, nome: str, telefone: str) -> Optional[int]:
-        """Retorna clienteId do Trinks buscando por nome; cria se não encontrar"""
+        """Retorna clienteId: busca por telefone, depois por nome, cria se não encontrar."""
+        # 1. Busca por telefone (mais confiável — ignora variações de nome)
+        if telefone:
+            cliente = self.buscar_cliente_por_telefone(telefone)
+            if cliente:
+                return cliente.get("id")
+
+        # 2. Busca por nome
         if nome and nome != "Cliente":
             clientes = self.listar_clientes(nome=nome)
             if clientes:
                 cid = clientes[0].get("id")
-                logger.info("Trinks: cliente existente id=%s nome=%s", cid, nome)
+                logger.info("Trinks: cliente encontrado por nome id=%s", cid)
                 return cid
+
+        # 3. Cria novo cliente
         resultado = self.criar_cliente(nome, telefone)
         if resultado:
             return resultado.get("id")

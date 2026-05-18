@@ -49,6 +49,11 @@ TOOLS = [
                     "horario_preferido": {
                         "type": "string",
                         "description": "Horário preferido (ex: manhã, tarde, 14h)"
+                    },
+                    "sexo": {
+                        "type": "string",
+                        "enum": ["M", "F"],
+                        "description": "Sexo do cliente: M para masculino, F para feminino"
                     }
                 },
                 "required": []
@@ -374,7 +379,15 @@ class AICoreMariana:
         except ValueError:
             return {"erro": "Formato de data/hora inválido. Use YYYY-MM-DD HH:MM"}
 
-        # 2. Busca serviço
+        # 2. Busca serviço — ajusta corte pelo sexo do cliente
+        sexo = cliente_info.get("sexo", "")
+        palavras_corte = ["corte", "cabelo"]
+        eh_corte = any(p in servico_nome.lower() for p in palavras_corte)
+        if eh_corte and sexo == "M" and "masculino" not in servico_nome.lower() and "feminino" not in servico_nome.lower():
+            servico_nome = "Corte Masculino"
+        elif eh_corte and sexo == "F" and "feminino" not in servico_nome.lower() and "masculino" not in servico_nome.lower():
+            servico_nome = "Corte Feminino"
+
         servico_id = None
         duracao_minutos = 60
         try:
@@ -510,6 +523,8 @@ class AICoreMariana:
                     conv.get("resposta_marina", "")
                 )
 
+        sexo = cliente_info.get("sexo", "")
+        sexo_str = {"M": "Masculino", "F": "Feminino"}.get(sexo, "Não informado")
         data_hoje = datetime.now().strftime("%d/%m/%Y")
 
         if is_primeira_vez:
@@ -533,6 +548,7 @@ class AICoreMariana:
             "- Objetivo: ajudar com agendamentos reais via sistema, serviços e recomendações\n\n"
             "CLIENTE:\n"
             "- Nome: {nome_cliente}\n"
+            "- Sexo: {sexo_str}\n"
             "- Histórico de serviços: {historico_str}\n"
             "- Profissional preferido: {profissional_pref}\n"
             "- Horário preferido: {horario_pref}\n\n"
@@ -546,17 +562,19 @@ class AICoreMariana:
             "2. Seja breve (máximo 3 linhas por mensagem)\n"
             "3. Use 1-2 emojis\n"
             "4. Sempre use o nome do cliente quando conhecido\n"
-            "5. Para agendar: (1) pergunte serviço desejado e data preferida, "
+            "5. Sexo: se desconhecido e o serviço for corte de cabelo, pergunte 'masculino ou feminino?' e salve com salvar_dados_cliente\n"
+            "6. Para agendar: (1) pergunte serviço desejado e data preferida, "
             "(2) use verificar_disponibilidade para mostrar horários reais, "
             "(3) confirme serviço + data + horário com o cliente, "
             "(4) use criar_agendamento para registrar no sistema\n"
-            "6. Após criar agendamento com sucesso, confirme os detalhes para o cliente"
+            "7. Após criar agendamento com sucesso, confirme os detalhes para o cliente"
             "{historico_text}"
         ).format(
             nome=self.marina_name,
             salao=self.salao_name,
             data_hoje=data_hoje,
             nome_cliente=nome_cliente,
+            sexo_str=sexo_str,
             historico_str=historico_str,
             profissional_pref=profissional_pref,
             horario_pref=horario_pref,

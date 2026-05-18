@@ -103,6 +103,7 @@ class ClienteService:
                 "nome": cliente.nome or "Cliente",
                 "nome_conhecido": bool(nome_real),
                 "is_primeira_vez": is_primeira_vez,
+                "sexo": getattr(cliente, "sexo", None),
                 "telefone": cliente.telefone,
                 "historico_servicos": historico_servicos,
                 "preferencias": preferencias,
