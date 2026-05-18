@@ -528,21 +528,17 @@ class AICoreMariana:
                 }
 
         # 6. Cria agendamento
-        # Trinks pode usar "duracao" ou "duracaoEmMinutos" dependendo da versão
-        servico_item = {
-            "servicoId": servico_id,
-            "duracao": duracao_minutos,
-            "duracaoEmMinutos": duracao_minutos,
-        }
-        # Se o raw tiver um campo específico de estabelecimento, inclui também
-        for campo in ("estabelecimentoServicoId", "estabelecimentoId"):
-            if campo in servico_raw:
-                servico_item[campo] = servico_raw[campo]
-
         try:
             estab_int = int(TRINKS_ESTABELECIMENTO_ID)
         except (ValueError, TypeError):
             estab_int = TRINKS_ESTABELECIMENTO_ID
+
+        # Trinks exige estabelecimentoId dentro de cada item de servicos também
+        servico_item = {
+            "servicoId": servico_id,
+            "estabelecimentoId": estab_int,
+            "duracaoEmMinutos": duracao_minutos,
+        }
 
         payload = {
             "estabelecimentoId": estab_int,

@@ -414,6 +414,31 @@ def debug_raw_servico():
     })
 
 
+@app.route('/trinks/debug/profissional', methods=['GET'])
+def debug_raw_profissional():
+    """Retorna campos RAW de profissional específico para diagnóstico"""
+    import requests as req
+    from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
+    nome = request.args.get('nome', '')
+    headers = {
+        "X-Api-Key": TRINKS_API_KEY,
+        "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+        "accept": "application/json",
+    }
+    r = req.get("{}/v1/profissionais".format(TRINKS_API_URL), headers=headers, timeout=15)
+    if not r.ok:
+        return jsonify({"erro": r.text}), r.status_code
+    dados = r.json()
+    itens = dados.get("data", dados) if isinstance(dados, dict) else dados
+    if nome:
+        itens = [p for p in itens if nome.lower() in (p.get("nome") or "").lower()
+                 or nome.lower() in (p.get("apelido") or "").lower()]
+    return jsonify({
+        "total": len(itens),
+        "profissionais_raw": itens[:10],
+    })
+
+
 @app.route('/trinks/debug/cliente', methods=['GET'])
 def debug_busca_cliente():
     """Diagnóstico completo de busca de cliente no Trinks"""
