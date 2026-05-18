@@ -26,6 +26,38 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "salvar_dados_cliente",
+            "description": (
+                "Salva ou atualiza dados do cliente no sistema. "
+                "Use assim que o cliente informar o nome, profissional preferido ou horário preferido."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nome": {
+                        "type": "string",
+                        "description": "Nome completo do cliente"
+                    },
+                    "profissional_preferido": {
+                        "type": "string",
+                        "description": "Nome do profissional preferido"
+                    },
+                    "servico_preferido": {
+                        "type": "string",
+                        "description": "Serviço que o cliente costuma fazer"
+                    },
+                    "horario_preferido": {
+                        "type": "string",
+                        "description": "Horário preferido (ex: manhã, tarde, 14h)"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "verificar_disponibilidade",
             "description": (
                 "Verifica horários disponíveis no Trinks para agendamento. "
@@ -248,11 +280,27 @@ class AICoreMariana:
     # ── Execução das tools ────────────────────────────────────
 
     def _executar_tool(self, nome, args, db, telefone, cliente_info):
-        if nome == "verificar_disponibilidade":
+        if nome == "salvar_dados_cliente":
+            return self._tool_salvar_dados_cliente(args, db, cliente_info)
+        elif nome == "verificar_disponibilidade":
             return self._tool_disponibilidade(args)
         elif nome == "criar_agendamento":
             return self._tool_criar_agendamento(args, telefone, cliente_info)
         return {"erro": "Ferramenta desconhecida: {}".format(nome)}
+
+    def _tool_salvar_dados_cliente(self, args, db, cliente_info):
+        from app.services.cliente_service import cliente_service
+        cliente_id = cliente_info.get("id")
+        if not cliente_id:
+            return {"erro": "Cliente não identificado"}
+        campos = {k: v for k, v in args.items() if v}
+        ok = cliente_service.atualizar_cliente(db, cliente_id, **campos)
+        if ok:
+            if "nome" in campos:
+                cliente_info["nome"] = campos["nome"]
+                cliente_info["nome_conhecido"] = True
+            return {"sucesso": True, "dados_salvos": campos}
+        return {"erro": "Não foi possível salvar os dados"}
 
     def _tool_disponibilidade(self, args):
         from app.services.trinks_api import trinks_api
@@ -391,6 +439,8 @@ class AICoreMariana:
 
     def _construir_system_prompt(self, cliente_info, historico_conversas=None):
         nome_cliente = cliente_info.get("nome", "Cliente")
+        nome_conhecido = cliente_info.get("nome_conhecido", False)
+        is_primeira_vez = cliente_info.get("is_primeira_vez", False)
         historico_servicos = cliente_info.get("historico_servicos", [])
         preferencias = cliente_info.get("preferencias", {})
 
@@ -409,6 +459,20 @@ class AICoreMariana:
 
         data_hoje = datetime.now().strftime("%d/%m/%Y")
 
+        if is_primeira_vez:
+            saudacao_instrucao = (
+                "PRIMEIRA CONVERSA: apresente-se brevemente e pergunte o nome do cliente. "
+                "Assim que ele informar, use salvar_dados_cliente para salvar."
+            )
+        elif nome_conhecido:
+            saudacao_instrucao = (
+                "CLIENTE CONHECIDO: use o nome '{}' para cumprimentar e personalizar todas as respostas."
+            ).format(nome_cliente)
+        else:
+            saudacao_instrucao = (
+                "NOME DESCONHECIDO: pergunte o nome do cliente na primeira oportunidade natural e salve com salvar_dados_cliente."
+            )
+
         return (
             "Você é a {nome}, assistente virtual do salão {salao}. Hoje é {data_hoje}.\n\n"
             "PERFIL:\n"
@@ -419,6 +483,7 @@ class AICoreMariana:
             "- Histórico de serviços: {historico_str}\n"
             "- Profissional preferido: {profissional_pref}\n"
             "- Horário preferido: {horario_pref}\n\n"
+            "SAUDAÇÃO: {saudacao_instrucao}\n\n"
             "SERVIÇOS E PREÇOS (atualizados do sistema):\n"
             "{servicos}\n\n"
             "PROFISSIONAIS DISPONÍVEIS:\n"
@@ -427,7 +492,7 @@ class AICoreMariana:
             "1. Responda em português brasileiro\n"
             "2. Seja breve (máximo 3 linhas por mensagem)\n"
             "3. Use 1-2 emojis\n"
-            "4. Personalize usando nome e histórico do cliente\n"
+            "4. Sempre use o nome do cliente quando conhecido\n"
             "5. Para agendar: (1) pergunte serviço desejado e data preferida, "
             "(2) use verificar_disponibilidade para mostrar horários reais, "
             "(3) confirme serviço + data + horário com o cliente, "
@@ -442,6 +507,7 @@ class AICoreMariana:
             historico_str=historico_str,
             profissional_pref=profissional_pref,
             horario_pref=horario_pref,
+            saudacao_instrucao=saudacao_instrucao,
             servicos=self._servicos_para_texto(),
             profissionais=self._profissionais_para_texto(),
             historico_text=historico_text,
