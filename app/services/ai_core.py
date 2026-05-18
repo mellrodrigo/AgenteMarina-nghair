@@ -1,1 +1,738 @@
-"""\nCore de IA da Marina — OpenAI GPT com function calling para agendamentos Trinks\n"""\nimport json\nimport logging\nimport os\nimport time\nfrom datetime import datetime\nfrom openai import OpenAI, RateLimitError\n\nlogger = logging.getLogger(__name__)\n\nOPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")\nOPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")\nMARINA_NAME = os.environ.get("MARINA_NAME", "Marina")\nMARINA_SALAO = os.environ.get("MARINA_SALAO", "NGHair")\n\n_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None\n\n_servicos_cache = []     # [{id_local, nome, preco, duracao_minutos}]\n_profissionais_cache = []  # [nome]\n\n# ── Ferramentas (function calling) ───────────────────────────\n\nTOOLS = [\n    {\n        "type": "function",\n        "function": {\n            "name": "salvar_dados_cliente",\n            "description": (\n                "Salva ou atualiza dados do cliente no sistema. "\n                "Use assim que o cliente informar o nome, profissional preferido ou horário preferido."\n            ),\n            "parameters": {\n                "type": "object",\n                "properties": {\n                    "nome": {\n                        "type": "string",\n                        "description": "Nome completo do cliente"\n                    },\n                    "profissional_preferido": {\n                        "type": "string",\n                        "description": "Nome do profissional preferido"\n                    },\n                    "servico_preferido": {\n                        "type": "string",\n                        "description": "Serviço que o cliente costuma fazer"\n                    },\n                    "horario_preferido": {\n                        "type": "string",\n                        "description": "Horário preferido (ex: manhã, tarde, 14h)"\n                    },\n                    "sexo": {\n                        "type": "string",\n                        "enum": ["M", "F"],\n                        "description": "Sexo do cliente: M para masculino, F para feminino"\n                    }\n                },\n                "required": []\n            }\n        }\n    },\n    {\n        "type": "function",\n        "function": {\n            "name": "verificar_disponibilidade",\n            "description": (\n                "Verifica horários disponíveis no Trinks para agendamento. "\n                "Use quando o cliente pedir horários ou quiser saber quando pode vir."\n            ),\n            "parameters": {\n                "type": "object",\n                "properties": {\n                    "data": {\n                        "type": "string",\n                        "description": "Data no formato YYYY-MM-DD (ex: 2024-06-15)"\n                    },\n                    "servico_nome": {\n                        "type": "string",\n                        "description": "Nome do serviço desejado (ex: Corte Feminino)"\n                    },\n                    "profissional_nome": {\n                        "type": "string",\n                        "description": "Nome do profissional preferido (opcional)"\n                    }\n                },\n                "required": ["data"]\n            }\n        }\n    },\n    {\n        "type": "function",\n        "function": {\n            "name": "criar_agendamento",\n            "description": (\n                "Cria o agendamento real no sistema Trinks. "\n                "Use SOMENTE quando o cliente já confirmou: nome completo, serviço, data e horário. "\n                "Pergunte TODOS os dados antes de chamar esta função, inclusive o nome completo do cliente."\n            ),\n            "parameters": {\n                "type": "object",\n                "properties": {\n                    "cliente_nome": {\n                        "type": "string",\n                        "description": "Nome completo do cliente (obrigatório, pergunte antes de agendar)"\n                    },\n                    "servico_nome": {\n                        "type": "string",\n                        "description": "Nome exato do serviço (ex: Corte Feminino)"\n                    },\n                    "profissional_nome": {\n                        "type": "string",\n                        "description": "Nome do profissional (deixe vazio se não tiver preferência)"\n                    },\n                    "data_hora": {\n                        "type": "string",\n                        "description": "Data e hora no formato YYYY-MM-DD HH:MM (ex: 2024-06-15 10:00)"\n                    },\n                    "cliente_trinks_id": {\n                        "type": "integer",\n                        "description": "ID do cliente no Trinks — use quando o cliente já foi identificado após seleção múltipla"\n                    }\n                },\n                "required": ["cliente_nome", "servico_nome", "profissional_nome", "data_hora"]\n            }\n        }\n    }\n]\n\n\nclass AICoreMariana:\n\n    def __init__(self):\n        self.marina_name = MARINA_NAME\n        self.salao_name = MARINA_SALAO\n\n    # ── Transcrição de áudio ──────────────────────────────────\n\n    def transcrever_audio(self, audio_bytes: bytes, mimetype: str = "audio/ogg") -> str:\n        """Transcreve áudio WhatsApp para texto usando OpenAI Whisper."""\n        import tempfile, os\n        global _client\n        if not _client:\n            _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))\n\n        ext = "ogg"\n        if "mp4" in mimetype or "mp4a" in mimetype:\n            ext = "mp4"\n        elif "mpeg" in mimetype or "mp3" in mimetype:\n            ext = "mp3"\n        elif "webm" in mimetype:\n            ext = "webm"\n\n        try:\n            with tempfile.NamedTemporaryFile(suffix=".{}".format(ext), delete=False) as tmp:\n                tmp.write(audio_bytes)\n                tmp_path = tmp.name\n\n            with open(tmp_path, "rb") as f:\n                result = _client.audio.transcriptions.create(\n                    model="whisper-1",\n                    file=f,\n                    language="pt",\n                )\n            os.unlink(tmp_path)\n            texto = result.text.strip()\n            logger.info("Whisper transcrição: %s", texto[:100])\n            return texto\n        except Exception as e:\n            logger.error("Erro Whisper: %s", str(e))\n            try:\n                os.unlink(tmp_path)\n            except Exception:\n                pass\n            return ""\n\n    # ── Cache Trinks ──────────────────────────────────────────\n\n    def atualizar_contexto_trinks(self, db):\n        global _servicos_cache, _profissionais_cache\n        try:\n            from app.models.database import Servico, Profissional\n            servicos = db.query(Servico).filter(Servico.ativo == True).all()\n            profissionais = db.query(Profissional).filter(Profissional.ativo == True).all()\n            _servicos_cache = [\n                {"id": s.id, "nome": s.nome, "preco": s.preco, "duracao_minutos": s.duracao_minutos}\n                for s in servicos\n            ]\n            _profissionais_cache = [p.nome for p in profissionais]\n            logger.info("Cache IA atualizado: %d serviços, %d profissionais",\n                        len(_servicos_cache), len(_profissionais_cache))\n        except Exception as e:\n            logger.error("Erro ao atualizar cache IA: %s", str(e))\n\n    def _servicos_para_texto(self):\n        if _servicos_cache:\n            linhas = []\n            for s in _servicos_cache[:30]:\n                preco = "R${:.0f}".format(s["preco"]) if s["preco"] else "consultar"\n                duracao = "{}min".format(s["duracao_minutos"]) if s["duracao_minutos"] else ""\n                linhas.append("- {}: {} ({})".format(s["nome"], preco, duracao))\n            return "\n".join(linhas)\n        return "- Corte Feminino: R$80 (45min)\n- Coloração: R$150 (120min)\n- Escova: R$60 (45min)"\n\n    def _profissionais_para_texto(self):\n        if _profissionais_cache:\n            return ", ".join(_profissionais_cache)\n        return "a equipe do salão"\n\n    # ── OpenAI ────────────────────────────────────────────────\n\n    def _chamar_gpt(self, system_prompt, user_message):\n        global _client\n        if not _client:\n            _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))\n        for attempt in range(3):\n            try:\n                response = _client.chat.completions.create(\n                    model=OPENAI_MODEL,\n                    messages=[\n                        {"role": "system", "content": system_prompt},\n                        {"role": "user", "content": user_message},\n                    ],\n                    temperature=0.7,\n                    max_tokens=512,\n                )\n                return response.choices[0].message.content\n            except RateLimitError:\n                wait = 2 ** attempt\n                logger.warning("OpenAI 429, aguardando %ds (tentativa %d/3)...", wait, attempt + 1)\n                time.sleep(wait)\n            except Exception as e:\n                logger.error("Erro OpenAI API: %s", str(e))\n                if attempt < 2:\n                    time.sleep(2 ** attempt)\n        return None\n\n    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info):\n        """Chama GPT com function calling; executa tools e retorna resposta final."""\n        global _client\n        if not _client:\n            _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))\n\n        for attempt in range(3):\n            try:\n                response = _client.chat.completions.create(\n                    model=OPENAI_MODEL,\n                    messages=messages,\n                    tools=TOOLS,\n                    tool_choice="auto",\n                    temperature=0.7,\n                    max_tokens=512,\n                )\n                msg = response.choices[0].message\n\n                if not msg.tool_calls:\n                    return msg.content\n\n                # Executa cada tool call\n                messages = list(messages) + [msg]\n                for tc in msg.tool_calls:\n                    args = json.loads(tc.function.arguments)\n                    resultado = self._executar_tool(tc.function.name, args, db, telefone, cliente_info)\n                    messages.append({\n                        "role": "tool",\n                        "tool_call_id": tc.id,\n                        "content": json.dumps(resultado, ensure_ascii=False),\n                    })\n\n                # Resposta final após tools\n                final = _client.chat.completions.create(\n                    model=OPENAI_MODEL,\n                    messages=messages,\n                    temperature=0.7,\n                    max_tokens=512,\n                )\n                return final.choices[0].message.content\n\n            except RateLimitError:\n                wait = 2 ** attempt\n                logger.warning("OpenAI 429, aguardando %ds...", wait)\n                time.sleep(wait)\n            except Exception as e:\n                logger.error("Erro OpenAI tools: %s", str(e))\n                if attempt < 2:\n                    time.sleep(2 ** attempt)\n        return None\n\n    # ── Execução das tools ────────────────────────────────────\n\n    def _executar_tool(self, nome, args, db, telefone, cliente_info):\n        if nome == "salvar_dados_cliente":\n            return self._tool_salvar_dados_cliente(args, db, cliente_info)\n        elif nome == "verificar_disponibilidade":\n            return self._tool_disponibilidade(args)\n        elif nome == "criar_agendamento":\n            return self._tool_criar_agendamento(args, telefone, cliente_info)\n        return {"erro": "Ferramenta desconhecida: {}".format(nome)}\n\n    def _tool_salvar_dados_cliente(self, args, db, cliente_info):\n        from app.services.cliente_service import cliente_service\n        cliente_id = cliente_info.get("id")\n        if not cliente_id:\n            return {"erro": "Cliente não identificado"}\n        campos = {k: v for k, v in args.items() if v}\n        ok = cliente_service.atualizar_cliente(db, cliente_id, **campos)\n        if ok:\n            if "nome" in campos:\n                cliente_info["nome"] = campos["nome"]\n                cliente_info["nome_conhecido"] = True\n            return {"sucesso": True, "dados_salvos": campos}\n        return {"erro": "Não foi possível salvar os dados"}\n\n    def _tool_disponibilidade(self, args):\n        from app.services.trinks_api import trinks_api\n        data = args.get("data", "")\n        servico_nome = args.get("servico_nome", "")\n        profissional_nome = args.get("profissional_nome", "")\n\n        servico_id = None\n        profissional_id = None\n\n        if servico_nome or profissional_nome:\n            try:\n                if servico_nome:\n                    servicos = trinks_api.listar_servicos()\n                    for s in servicos:\n                        if servico_nome.lower() in s["nome"].lower():\n                            servico_id = s["id"]\n                            break\n\n                if profissional_nome:\n                    profissionais = trinks_api.listar_profissionais()\n                    busca = profissional_nome.strip().lower()\n                    for p in profissionais:\n                        if busca in p["nome"].strip().lower() or busca in p["nome_completo"].strip().lower():\n                            profissional_id = p["id"]\n                            break\n            except Exception as e:\n                logger.error("Erro buscando IDs Trinks: %s", str(e))\n\n        horarios = trinks_api.horarios_disponiveis(data, servico_id, profissional_id)\n\n        if horarios:\n            return {\n                "disponivel": True,\n                "data": data,\n                "horarios_disponiveis": horarios[:8],\n                "profissional": profissional_nome or "qualquer profissional",\n                "servico": servico_nome,\n            }\n        return {\n            "disponivel": False,\n            "data": data,\n            "mensagem": "Sem horários disponíveis para esta data. Tente outra data.",\n        }\n\n    def _tool_criar_agendamento(self, args, telefone, cliente_info):\n        from app.services.trinks_api import trinks_api\n        from app.services.evolution_api import evolution_api_client\n        from config import TRINKS_ESTABELECIMENTO_ID, WHATSAPP_INSTANCE_NAME\n\n        def _debug(msg):\n            logger.info("[DEBUG-AGENDAMENTO] %s", msg)\n            try:\n                evolution_api_client.enviar_mensagem(\n                    instance=WHATSAPP_INSTANCE_NAME,\n                    numero=telefone,\n                    mensagem="🔧 *[DEV]* " + msg,\n                )\n            except Exception:\n                pass\n\n        servico_nome = args.get("servico_nome", "")\n        profissional_nome = args.get("profissional_nome", "")\n        data_hora = args.get("data_hora", "")\n\n        # 1. Valida data/hora\n        try:\n            dt = datetime.strptime(data_hora, "%Y-%m-%d %H:%M")\n            data_hora_iso = dt.isoformat()\n        except ValueError:\n            return {"erro": "Formato de data/hora inválido. Use YYYY-MM-DD HH:MM"}\n\n        # 2. Busca serviço — ajusta corte pelo sexo do cliente\n        sexo = cliente_info.get("sexo", "")\n        palavras_corte = ["corte", "cabelo"]\n        eh_corte = any(p in servico_nome.lower() for p in palavras_corte)\n        if eh_corte and sexo == "M" and "masculino" not in servico_nome.lower() and "feminino" not in servico_nome.lower():\n            servico_nome = "Corte Masculino"\n        elif eh_corte and sexo == "F" and "feminino" not in servico_nome.lower() and "masculino" not in servico_nome.lower():\n            servico_nome = "Corte Feminino"\n\n        servico_id = None\n        duracao_minutos = 60\n        servico_raw = {}\n        try:\n            servicos = trinks_api.listar_servicos()\n            for s in servicos:\n                if servico_nome.lower() in s["nome"].lower():\n                    servico_id = s["id"]\n                    servico_nome = s["nome"]\n                    duracao_minutos = int(s.get("duracao_minutos") or 60)\n                    servico_raw = s.get("_raw", {})\n                    break\n        except Exception as e:\n            logger.error("Erro buscando serviço: %s", str(e))\n\n        if not servico_id:\n            _debug("❌ Serviço não encontrado: '{}'".format(servico_nome))\n            return {"erro": "Serviço '{}' não encontrado no sistema.".format(servico_nome)}\n\n        raw_chaves = list(servico_raw.keys()) if servico_raw else []\n        _debug("✅ Serviço: {} | id={} | duração={}min | campos_raw={}".format(\n            servico_nome, servico_id, duracao_minutos, raw_chaves))\n\n        # 3. Busca profissional\n        profissional_id = None\n        try:\n            profissionais = trinks_api.listar_profissionais()\n            busca = profissional_nome.strip().lower()\n            partes = [p for p in busca.split() if len(p) > 2]\n            for p in profissionais:\n                nome_apelido = p.get("nome", "").strip().lower()\n                nome_completo = p.get("nome_completo", "").strip().lower()\n                if (busca in nome_apelido or busca in nome_completo or\n                        nome_apelido in busca or\n                        any(parte in nome_completo for parte in partes) or\n                        any(parte in nome_apelido for parte in partes)):\n                    profissional_id = p["id"]\n                    profissional_nome = p["nome_completo"] or p["nome"]\n                    break\n        except Exception as e:\n            logger.error("Erro buscando profissional: %s", str(e))\n\n        if not profissional_id:\n            try:\n                profissionais = profissionais if 'profissionais' in dir() else trinks_api.listar_profissionais()\n            except Exception:\n                profissionais = []\n            lista = "\n".join("{}️⃣ {}".format(i+1, p["nome_completo"] or p["nome"])\n                              for i, p in enumerate(profissionais))\n            _debug("⚠️ Profissional '{}' não encontrado".format(profissional_nome))\n            return {\n                "erro": "Profissional não encontrado. Qual profissional você prefere?\n\n{}".format(lista),\n            }\n\n        _debug("✅ Profissional: {} | id={}".format(profissional_nome, profissional_id))\n\n        # 4. Verifica conflito de horário\n        data_apenas = dt.strftime("%Y-%m-%d")\n        hora_desejada = dt.strftime("%H:%M")\n        try:\n            agendamentos_dia = trinks_api.listar_agendamentos(data_inicio=data_apenas, data_fim=data_apenas)\n            conflitos = []\n            for ag in agendamentos_dia:\n                if profissional_id and ag.get("profissional_id") != profissional_id:\n                    continue\n                ag_hora = ag.get("data_hora", "")\n                if ag_hora and hora_desejada in ag_hora:\n                    conflitos.append(ag)\n\n            if conflitos:\n                c = conflitos[0]\n                _debug("⚠️ Conflito: {} já tem agendamento às {} com {} (id={})".format(\n                    profissional_nome or "profissional", hora_desejada,\n                    c.get("cliente", "?"), c.get("id", "?")))\n                return {\n                    "erro": "Já existe um agendamento às {} para {}. Escolha outro horário.".format(\n                        hora_desejada, profissional_nome or "esse profissional")\n                }\n            _debug("✅ Horário {} livre em {}".format(hora_desejada, data_apenas))\n        except Exception as e:\n            logger.warning("Erro ao verificar conflitos: %s", str(e))\n            _debug("⚠️ Não foi possível verificar conflitos — prosseguindo")\n\n        # 5. Busca ou cria cliente no Trinks\n        nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")\n        if not nome_cliente or nome_cliente.strip().lower() in ("cliente", ""):\n            return {"erro": "Preciso do nome completo do cliente para criar o agendamento."}\n\n        tel_cliente = telefone or ""\n        cliente_id = args.get("cliente_trinks_id")\n\n        if not cliente_id:\n            try:\n                candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)\n            except Exception as e:\n                logger.warning("Erro ao buscar candidatos: %s", str(e))\n                candidatos = []\n\n            if len(candidatos) == 0:\n                try:\n                    novo = trinks_api.criar_cliente(nome_cliente, tel_cliente)\n                    cliente_id = novo.get("id") if novo else None\n                except Exception as e:\n                    logger.warning("Erro ao criar cliente: %s", str(e))\n\n                if not cliente_id:\n                    _debug("❌ Não foi possível registrar cliente '{}' no Trinks".format(nome_cliente))\n                    return {"erro": "Não foi possível registrar o cliente no sistema."}\n                _debug("✅ Cliente novo criado: {} | id={}".format(nome_cliente, cliente_id))\n\n            elif len(candidatos) == 1:\n                cliente_id = candidatos[0].get("id")\n                _debug("✅ Cliente: {} | id={}".format(candidatos[0].get("nome"), cliente_id))\n\n            else:\n                linhas = ["Encontrei {} cadastros 🔍 Qual é o seu?\n".format(len(candidatos))]\n                for i, c in enumerate(candidatos, 1):\n                    fones = c.get("telefones", [])\n                    tel_fmt = ""\n                    if fones:\n                        t = fones[0]\n                        tel_fmt = " – ({}) {}-{}".format(\n                            t.get("ddd", ""),\n                            t.get("telefone", "")[:5],\n                            t.get("telefone", "")[5:]\n                        )\n                    linhas.append("{}️⃣ {}{}".format(i, c.get("nome", "?"), tel_fmt))\n                linhas.append("\nResponda com o número correspondente.")\n                _debug("🔍 {} candidatos encontrados — aguardando seleção".format(len(candidatos)))\n                return {\n                    "aguardando_selecao": True,\n                    "candidatos": [{"indice": i+1, "id": c.get("id"), "nome": c.get("nome")}\n                                   for i, c in enumerate(candidatos)],\n                    "mensagem_usuario": "\n".join(linhas),\n                }\n\n        # 6. Cria agendamento\n        try:\n            estab_int = int(TRINKS_ESTABELECIMENTO_ID)\n        except (ValueError, TypeError):\n            estab_int = TRINKS_ESTABELECIMENTO_ID\n\n        servico_item = {\n            "servicoId": servico_id,\n            "estabelecimentoId": estab_int,\n            "duracaoEmMinutos": duracao_minutos,\n        }\n\n        payload = {\n            "estabelecimentoId": estab_int,\n            "clienteId": cliente_id,\n            "profissionalId": profissional_id,\n            "dataHora": data_hora_iso,\n            "servicos": [servico_item],\n            "observacao": "",\n        }\n\n        logger.info("Criando agendamento Trinks: %s", payload)\n        _debug("📤 Enviando: estab={} | clienteId={} | profId={} | servicoId={} | dur={}min | dataHora={}".format(\n            estab_int, cliente_id, profissional_id, servico_id, duracao_minutos, data_hora_iso))\n\n        resultado = trinks_api.criar_agendamento(payload)\n\n        if resultado:\n            ag_id = resultado.get("id", "")\n            _debug("✅ Agendamento criado! id={}".format(ag_id))\n            return {\n                "sucesso": True,\n                "agendamento_id": ag_id,\n                "servico": servico_nome,\n                "profissional": profissional_nome or "a definir pelo salão",\n                "data_hora": data_hora,\n                "cliente": nome_cliente,\n                "mensagem": "Agendamento criado com sucesso no sistema!",\n            }\n\n        _debug("❌ Falha ao criar agendamento — veja os logs do servidor")\n        return {"erro": "Falha ao criar agendamento no Trinks. Tente novamente ou ligue para o salão."}\n\n    # ── Prompt ────────────────────────────────────────────────\n\n    def _construir_system_prompt(self, cliente_info, historico_conversas=None):\n        nome_cliente = cliente_info.get("nome", "Cliente")\n        nome_conhecido = cliente_info.get("nome_conhecido", False)\n        is_primeira_vez = cliente_info.get("is_primeira_vez", False)\n        historico_servicos = cliente_info.get("historico_servicos", [])\n        preferencias = cliente_info.get("preferencias", {})\n\n        historico_str = ", ".join(historico_servicos[-5:]) if historico_servicos else "nenhum"\n        profissional_pref = preferencias.get("profissional_preferido", "qualquer")\n        horario_pref = preferencias.get("horario_preferido", "qualquer")\n\n        historico_text = ""\n        if historico_conversas:\n            historico_text = "\nHistórico recente:\n"\n            for conv in historico_conversas[-3:]:\n                historico_text += "Cliente: {}\nMarina: {}\n".format(\n                    conv.get("mensagem_usuario", ""),\n                    conv.get("resposta_marina", "")\n                )\n\n        sexo = cliente_info.get("sexo", "")\n        sexo_str = {"M": "Masculino", "F": "Feminino"}.get(sexo, "Não informado")\n        data_hoje = datetime.now().strftime("%d/%m/%Y")\n\n        if is_primeira_vez:\n            saudacao_instrucao = (\n                "PRIMEIRA CONVERSA: apresente-se brevemente e pergunte o nome do cliente. "\n                "Assim que ele informar, use salvar_dados_cliente para salvar."\n            )\n        elif nome_conhecido:\n            saudacao_instrucao = (\n                "CLIENTE CONHECIDO: use o nome '{}' para cumprimentar e personalizar todas as respostas."\n            ).format(nome_cliente)\n        else:\n            saudacao_instrucao = (\n                "NOME DESCONHECIDO: pergunte o nome do cliente na primeira oportunidade natural e salve com salvar_dados_cliente."\n            )\n\n        return (\n            "Você é a {nome}, assistente virtual do salão {salao}. Hoje é {data_hoje}.\n\n"\n            "PERFIL:\n"\n            "- Tom: profissional, amigável e acolhedora\n"\n            "- Objetivo: ajudar com agendamentos reais via sistema, serviços e recomendações\n\n"\n            "CLIENTE:\n"\n            "- Nome: {nome_cliente}\n"\n            "- Sexo: {sexo_str}\n"\n            "- Histórico de serviços: {historico_str}\n"\n            "- Profissional preferido: {profissional_pref}\n"\n            "- Horário preferido: {horario_pref}\n\n"\n            "SAUDAÇÃO: {saudacao_instrucao}\n\n"\n            "SERVIÇOS E PREÇOS (atualizados do sistema):\n"\n            "{servicos}\n\n"\n            "PROFISSIONAIS DISPONÍVEIS:\n"\n            "{profissionais}\n\n"\n            "INSTRUÇÕES:\n"\n            "1. Responda em português brasileiro\n"\n            "2. Seja breve (máximo 3 linhas por mensagem)\n"\n            "3. Use 1-2 emojis\n"\n            "4. Sempre use o nome do cliente quando conhecido\n"\n            "5. Sexo: se desconhecido e o serviço for corte de cabelo, pergunte 'masculino ou feminino?' e salve com salvar_dados_cliente\n"\n            "6. Para agendar: (1) pergunte serviço, profissional preferido e data, "\n            "(2) use verificar_disponibilidade para mostrar horários reais, "\n            "(3) confirme todos os dados com o cliente, "\n            "(4) use criar_agendamento — profissional_nome é OBRIGATÓRIO\n"\n            "7. Se profissional não for especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"\n            "8. Após criar agendamento com sucesso, confirme os detalhes para o cliente"\n            "{historico_text}"\n        ).format(\n            nome=self.marina_name,\n            salao=self.salao_name,\n            data_hoje=data_hoje,\n            nome_cliente=nome_cliente,\n            sexo_str=sexo_str,\n            historico_str=historico_str,\n            profissional_pref=profissional_pref,\n            horario_pref=horario_pref,\n            saudacao_instrucao=saudacao_instrucao,\n            servicos=self._servicos_para_texto(),\n            profissionais=self._profissionais_para_texto(),\n            historico_text=historico_text,\n            profissionais_lista=self._profissionais_para_texto(),\n        )\n\n    # ── Fallback sem IA ───────────────────────────────────────\n\n    def _resposta_fallback(self, mensagem, cliente_info):\n        nome = cliente_info.get("nome", "")\n        saudacao = "Olá{}! ".format(", " + nome if nome and nome != "Cliente" else "")\n        m = mensagem.lower()\n\n        if any(p in m for p in ["serviço", "serviços", "fazem", "oferecem", "tem"]):\n            if _servicos_cache:\n                top = _servicos_cache[:10]\n                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)\n                return "{}Alguns dos nossos serviços 💇‍♀️:\n{}\n\nQuer agendar ou saber mais?".format(saudacao, lista)\n\n        if any(p in m for p in ["preço", "valor", "custa", "quanto"]):\n            if _servicos_cache:\n                top = _servicos_cache[:8]\n                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)\n                return "{}Nossos preços 💅:\n{}\n\nPosso agendar para você!".format(saudacao, lista)\n\n        if any(p in m for p in ["agendar", "marcar", "horário", "hora", "vaga", "disponível"]):\n            prof = self._profissionais_para_texto()\n            return "{}Adoraria agendar para você! ✨ Temos: {}.\nQual serviço e data você prefere?".format(saudacao, prof)\n\n        if any(p in m for p in ["oi", "olá", "opa", "bom dia", "boa tarde", "boa noite"]):\n            return "{}Sou a Marina, assistente virtual do {} 💚 Como posso te ajudar hoje?".format(saudacao, self.salao_name)\n\n        return "{}Sou a Marina, do {} 😊 Posso ajudar com serviços, preços e agendamentos. O que você precisa?".format(saudacao, self.salao_name)\n\n    # ── Interface pública ─────────────────────────────────────\n\n    def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,\n                                 db=None, telefone=None):\n        try:\n            system_prompt = self._construir_system_prompt(cliente_info, historico_conversas)\n            messages = [\n                {"role": "system", "content": system_prompt},\n                {"role": "user", "content": mensagem},\n            ]\n\n            resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info)\n\n            if not resposta:\n                resposta = self._resposta_fallback(mensagem, cliente_info)\n\n            intencao = self._classificar_intencao(mensagem)\n            return resposta, intencao\n        except Exception as e:\n            logger.error("Erro ao processar: %s", str(e))\n            return "Desculpe, tive um problema técnico. Pode tentar novamente? 😊", "erro"\n\n    def _classificar_intencao(self, mensagem):\n        m = mensagem.lower()\n        if any(p in m for p in ["agendar", "marcar", "horário", "hora", "disponível", "vaga"]):\n            return "agendamento"\n        elif any(p in m for p in ["preço", "valor", "custa", "quanto"]):\n            return "consulta_preco"\n        elif any(p in m for p in ["serviço", "serviços", "fazem", "oferecem"]):\n            return "consulta_servicos"\n        elif any(p in m for p in ["cancelar", "desmarcar", "remarcar"]):\n            return "cancelamento"\n        elif any(p in m for p in ["oi", "olá", "opa", "bom dia", "boa tarde", "boa noite"]):\n            return "saudacao"\n        else:\n            return "consulta_geral"\n\n    def gerar_recomendacao(self, cliente_info):\n        try:\n            historico = cliente_info.get("historico_servicos", [])\n            nome = cliente_info.get("nome", "Cliente")\n            if not historico:\n                return "Que tal começar com um corte e escova? 💇‍♀️"\n            prompt = (\n                "Gere uma recomendação curta (1-2 linhas) para {}. "\n                "Histórico de serviços: {}. Serviços disponíveis: {}. Use 1 emoji."\n            ).format(nome, ", ".join(historico[-3:]), self._servicos_para_texto())\n            system = "Você é a {} do salão {}, assistente amigável.".format(self.marina_name, self.salao_name)\n            return self._chamar_gpt(system, prompt) or "Que tal agendar um serviço? 💇‍♀️"\n        except Exception as e:\n            logger.error("Erro recomendação: %s", str(e))\n            return "Que tal agendar um serviço conosco? 💇‍♀️"\n\n\nai_core = AICoreMariana()\n
+"""
+Core de IA da Marina — OpenAI GPT com function calling para agendamentos Trinks
+"""
+import json
+import logging
+import os
+import time
+from datetime import datetime
+from openai import OpenAI, RateLimitError
+
+logger = logging.getLogger(__name__)
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+MARINA_NAME = os.environ.get("MARINA_NAME", "Marina")
+MARINA_SALAO = os.environ.get("MARINA_SALAO", "NGHair")
+
+_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+_servicos_cache = []     # [{id_local, nome, preco, duracao_minutos}]
+_profissionais_cache = []  # [nome]
+
+# ── Ferramentas (function calling) ───────────────────────────
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "salvar_dados_cliente",
+            "description": (
+                "Salva ou atualiza dados do cliente no sistema. "
+                "Use assim que o cliente informar o nome, profissional preferido ou horário preferido."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nome": {
+                        "type": "string",
+                        "description": "Nome completo do cliente"
+                    },
+                    "profissional_preferido": {
+                        "type": "string",
+                        "description": "Nome do profissional preferido"
+                    },
+                    "servico_preferido": {
+                        "type": "string",
+                        "description": "Serviço que o cliente costuma fazer"
+                    },
+                    "horario_preferido": {
+                        "type": "string",
+                        "description": "Horário preferido (ex: manhã, tarde, 14h)"
+                    },
+                    "sexo": {
+                        "type": "string",
+                        "enum": ["M", "F"],
+                        "description": "Sexo do cliente: M para masculino, F para feminino"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verificar_disponibilidade",
+            "description": (
+                "Verifica horários disponíveis no Trinks para agendamento. "
+                "Use quando o cliente pedir horários ou quiser saber quando pode vir."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "type": "string",
+                        "description": "Data no formato YYYY-MM-DD (ex: 2024-06-15)"
+                    },
+                    "servico_nome": {
+                        "type": "string",
+                        "description": "Nome do serviço desejado (ex: Corte Feminino)"
+                    },
+                    "profissional_nome": {
+                        "type": "string",
+                        "description": "Nome do profissional preferido (opcional)"
+                    }
+                },
+                "required": ["data"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "criar_agendamento",
+            "description": (
+                "Cria o agendamento real no sistema Trinks. "
+                "Use SOMENTE quando o cliente já confirmou: nome completo, serviço, data e horário. "
+                "Pergunte TODOS os dados antes de chamar esta função, inclusive o nome completo do cliente."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cliente_nome": {
+                        "type": "string",
+                        "description": "Nome completo do cliente (obrigatório, pergunte antes de agendar)"
+                    },
+                    "servico_nome": {
+                        "type": "string",
+                        "description": "Nome exato do serviço (ex: Corte Feminino)"
+                    },
+                    "profissional_nome": {
+                        "type": "string",
+                        "description": "Nome do profissional (deixe vazio se não tiver preferência)"
+                    },
+                    "data_hora": {
+                        "type": "string",
+                        "description": "Data e hora no formato YYYY-MM-DD HH:MM (ex: 2024-06-15 10:00)"
+                    },
+                    "cliente_trinks_id": {
+                        "type": "integer",
+                        "description": "ID do cliente no Trinks — use quando o cliente já foi identificado após seleção múltipla"
+                    }
+                },
+                "required": ["cliente_nome", "servico_nome", "profissional_nome", "data_hora"]
+            }
+        }
+    }
+]
+
+
+class AICoreMariana:
+
+    def __init__(self):
+        self.marina_name = MARINA_NAME
+        self.salao_name = MARINA_SALAO
+
+    # ── Transcrição de áudio ──────────────────────────────────
+
+    def transcrever_audio(self, audio_bytes: bytes, mimetype: str = "audio/ogg") -> str:
+        """Transcreve áudio WhatsApp para texto usando OpenAI Whisper."""
+        import tempfile, os
+        global _client
+        if not _client:
+            _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
+        ext = "ogg"
+        if "mp4" in mimetype or "mp4a" in mimetype:
+            ext = "mp4"
+        elif "mpeg" in mimetype or "mp3" in mimetype:
+            ext = "mp3"
+        elif "webm" in mimetype:
+            ext = "webm"
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".{}".format(ext), delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            with open(tmp_path, "rb") as f:
+                result = _client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    language="pt",
+                )
+            os.unlink(tmp_path)
+            texto = result.text.strip()
+            logger.info("Whisper transcrição: %s", texto[:100])
+            return texto
+        except Exception as e:
+            logger.error("Erro Whisper: %s", str(e))
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            return ""
+
+    # ── Cache Trinks ──────────────────────────────────────────
+
+    def atualizar_contexto_trinks(self, db):
+        global _servicos_cache, _profissionais_cache
+        try:
+            from app.models.database import Servico, Profissional
+            servicos = db.query(Servico).filter(Servico.ativo == True).all()
+            profissionais = db.query(Profissional).filter(Profissional.ativo == True).all()
+            _servicos_cache = [
+                {"id": s.id, "nome": s.nome, "preco": s.preco, "duracao_minutos": s.duracao_minutos}
+                for s in servicos
+            ]
+            _profissionais_cache = [p.nome for p in profissionais]
+            logger.info("Cache IA atualizado: %d serviços, %d profissionais",
+                        len(_servicos_cache), len(_profissionais_cache))
+        except Exception as e:
+            logger.error("Erro ao atualizar cache IA: %s", str(e))
+
+    def _servicos_para_texto(self):
+        if _servicos_cache:
+            linhas = []
+            for s in _servicos_cache[:30]:
+                preco = "R${:.0f}".format(s["preco"]) if s["preco"] else "consultar"
+                duracao = "{}min".format(s["duracao_minutos"]) if s["duracao_minutos"] else ""
+                linhas.append("- {}: {} ({})".format(s["nome"], preco, duracao))
+            return "\n".join(linhas)
+        return "- Corte Feminino: R$80 (45min)\n- Coloração: R$150 (120min)\n- Escova: R$60 (45min)"
+
+    def _profissionais_para_texto(self):
+        if _profissionais_cache:
+            return ", ".join(_profissionais_cache)
+        return "a equipe do salão"
+
+    # ── OpenAI ────────────────────────────────────────────────
+
+    def _chamar_gpt(self, system_prompt, user_message):
+        global _client
+        if not _client:
+            _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        for attempt in range(3):
+            try:
+                response = _client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                    temperature=0.7,
+                    max_tokens=512,
+                )
+                return response.choices[0].message.content
+            except RateLimitError:
+                wait = 2 ** attempt
+                logger.warning("OpenAI 429, aguardando %ds (tentativa %d/3)...", wait, attempt + 1)
+                time.sleep(wait)
+            except Exception as e:
+                logger.error("Erro OpenAI API: %s", str(e))
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        return None
+
+    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info):
+        """Chama GPT com function calling; executa tools e retorna resposta final."""
+        global _client
+        if not _client:
+            _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
+        for attempt in range(3):
+            try:
+                response = _client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    temperature=0.7,
+                    max_tokens=512,
+                )
+                msg = response.choices[0].message
+
+                if not msg.tool_calls:
+                    return msg.content
+
+                # Executa cada tool call
+                messages = list(messages) + [msg]
+                for tc in msg.tool_calls:
+                    args = json.loads(tc.function.arguments)
+                    resultado = self._executar_tool(tc.function.name, args, db, telefone, cliente_info)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(resultado, ensure_ascii=False),
+                    })
+
+                # Resposta final após tools
+                final = _client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=512,
+                )
+                return final.choices[0].message.content
+
+            except RateLimitError:
+                wait = 2 ** attempt
+                logger.warning("OpenAI 429, aguardando %ds...", wait)
+                time.sleep(wait)
+            except Exception as e:
+                logger.error("Erro OpenAI tools: %s", str(e))
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        return None
+
+    # ── Execução das tools ────────────────────────────────────
+
+    def _executar_tool(self, nome, args, db, telefone, cliente_info):
+        if nome == "salvar_dados_cliente":
+            return self._tool_salvar_dados_cliente(args, db, cliente_info)
+        elif nome == "verificar_disponibilidade":
+            return self._tool_disponibilidade(args)
+        elif nome == "criar_agendamento":
+            return self._tool_criar_agendamento(args, telefone, cliente_info)
+        return {"erro": "Ferramenta desconhecida: {}".format(nome)}
+
+    def _tool_salvar_dados_cliente(self, args, db, cliente_info):
+        from app.services.cliente_service import cliente_service
+        cliente_id = cliente_info.get("id")
+        if not cliente_id:
+            return {"erro": "Cliente não identificado"}
+        campos = {k: v for k, v in args.items() if v}
+        ok = cliente_service.atualizar_cliente(db, cliente_id, **campos)
+        if ok:
+            if "nome" in campos:
+                cliente_info["nome"] = campos["nome"]
+                cliente_info["nome_conhecido"] = True
+            return {"sucesso": True, "dados_salvos": campos}
+        return {"erro": "Não foi possível salvar os dados"}
+
+    def _tool_disponibilidade(self, args):
+        from app.services.trinks_api import trinks_api
+        data = args.get("data", "")
+        servico_nome = args.get("servico_nome", "")
+        profissional_nome = args.get("profissional_nome", "")
+
+        servico_id = None
+        profissional_id = None
+
+        if servico_nome or profissional_nome:
+            try:
+                if servico_nome:
+                    servicos = trinks_api.listar_servicos()
+                    for s in servicos:
+                        if servico_nome.lower() in s["nome"].lower():
+                            servico_id = s["id"]
+                            break
+
+                if profissional_nome:
+                    profissionais = trinks_api.listar_profissionais()
+                    for p in profissionais:
+                        if profissional_nome.lower() in p["nome"].lower():
+                            profissional_id = p["id"]
+                            break
+            except Exception as e:
+                logger.error("Erro buscando IDs Trinks: %s", str(e))
+
+        horarios = trinks_api.horarios_disponiveis(data, servico_id, profissional_id)
+
+        if horarios:
+            return {
+                "disponivel": True,
+                "data": data,
+                "horarios_disponiveis": horarios[:8],
+                "profissional": profissional_nome or "qualquer profissional",
+                "servico": servico_nome,
+            }
+        return {
+            "disponivel": False,
+            "data": data,
+            "mensagem": "Sem horários disponíveis para esta data. Tente outra data.",
+        }
+
+    def _tool_criar_agendamento(self, args, telefone, cliente_info):
+        from app.services.trinks_api import trinks_api
+        from app.services.evolution_api import evolution_api_client
+        from config import TRINKS_ESTABELECIMENTO_ID, WHATSAPP_INSTANCE_NAME
+
+        def _debug(msg):
+            """Envia mensagem de status no WhatsApp durante o fluxo (modo dev)."""
+            logger.info("[DEBUG-AGENDAMENTO] %s", msg)
+            try:
+                evolution_api_client.enviar_mensagem(
+                    instance=WHATSAPP_INSTANCE_NAME,
+                    numero=telefone,
+                    mensagem="🔧 *[DEV]* " + msg,
+                )
+            except Exception:
+                pass
+
+        servico_nome = args.get("servico_nome", "")
+        profissional_nome = args.get("profissional_nome", "")
+        data_hora = args.get("data_hora", "")
+
+        # 1. Valida data/hora
+        try:
+            dt = datetime.strptime(data_hora, "%Y-%m-%d %H:%M")
+            data_hora_iso = dt.isoformat()
+        except ValueError:
+            return {"erro": "Formato de data/hora inválido. Use YYYY-MM-DD HH:MM"}
+
+        # 2. Busca serviço — ajusta corte pelo sexo do cliente
+        sexo = cliente_info.get("sexo", "")
+        palavras_corte = ["corte", "cabelo"]
+        eh_corte = any(p in servico_nome.lower() for p in palavras_corte)
+        if eh_corte and sexo == "M" and "masculino" not in servico_nome.lower() and "feminino" not in servico_nome.lower():
+            servico_nome = "Corte Masculino"
+        elif eh_corte and sexo == "F" and "feminino" not in servico_nome.lower() and "masculino" not in servico_nome.lower():
+            servico_nome = "Corte Feminino"
+
+        servico_id = None
+        duracao_minutos = 60
+        servico_raw = {}
+        try:
+            servicos = trinks_api.listar_servicos()
+            for s in servicos:
+                if servico_nome.lower() in s["nome"].lower():
+                    servico_id = s["id"]
+                    servico_nome = s["nome"]
+                    duracao_minutos = int(s.get("duracao_minutos") or 60)
+                    servico_raw = s.get("_raw", {})
+                    break
+        except Exception as e:
+            logger.error("Erro buscando serviço: %s", str(e))
+
+        if not servico_id:
+            _debug("❌ Serviço não encontrado: '{}'".format(servico_nome))
+            return {"erro": "Serviço '{}' não encontrado no sistema.".format(servico_nome)}
+
+        raw_chaves = list(servico_raw.keys()) if servico_raw else []
+        _debug("✅ Serviço: {} | id={} | duração={}min | campos_raw={}".format(
+            servico_nome, servico_id, duracao_minutos, raw_chaves))
+
+        # 3. Busca profissional — checa apelido e nome completo
+        profissional_id = None
+        try:
+            profissionais = trinks_api.listar_profissionais()
+            busca = profissional_nome.strip().lower()
+            partes = [p for p in busca.split() if len(p) > 2]
+            for p in profissionais:
+                nome_apelido = p.get("nome", "").strip().lower()
+                nome_completo = p.get("nome_completo", "").strip().lower()
+                if (busca in nome_apelido or busca in nome_completo or
+                        nome_apelido in busca or
+                        any(parte in nome_completo for parte in partes) or
+                        any(parte in nome_apelido for parte in partes)):
+                    profissional_id = p["id"]
+                    profissional_nome = p["nome_completo"] or p["nome"]
+                    break
+        except Exception as e:
+            logger.error("Erro buscando profissional: %s", str(e))
+
+        if not profissional_id:
+            try:
+                profissionais = profissionais if 'profissionais' in dir() else trinks_api.listar_profissionais()
+            except Exception:
+                profissionais = []
+            lista = "\n".join("{}️⃣ {}".format(i+1, p["nome_completo"] or p["nome"])
+                              for i, p in enumerate(profissionais))
+            _debug("⚠️ Profissional '{}' não encontrado".format(profissional_nome))
+            return {
+                "erro": "Profissional não encontrado. Qual profissional você prefere?\n\n{}".format(lista),
+            }
+
+        # 4. Verifica conflito de horário
+        data_apenas = dt.strftime("%Y-%m-%d")
+        hora_desejada = dt.strftime("%H:%M")
+        try:
+            agendamentos_dia = trinks_api.listar_agendamentos(data_inicio=data_apenas, data_fim=data_apenas)
+            conflitos = []
+            for ag in agendamentos_dia:
+                if profissional_id and ag.get("profissional_id") != profissional_id:
+                    continue
+                ag_hora = ag.get("data_hora", "")
+                if ag_hora and hora_desejada in ag_hora:
+                    conflitos.append(ag)
+
+            if conflitos:
+                c = conflitos[0]
+                _debug("⚠️ Conflito: {} já tem agendamento às {} com {} (id={})".format(
+                    profissional_nome or "profissional", hora_desejada,
+                    c.get("cliente", "?"), c.get("id", "?")))
+                return {
+                    "erro": "Já existe um agendamento às {} para {}. Escolha outro horário.".format(
+                        hora_desejada, profissional_nome or "esse profissional")
+                }
+            _debug("✅ Horário {} livre em {}".format(hora_desejada, data_apenas))
+        except Exception as e:
+            logger.warning("Erro ao verificar conflitos: %s", str(e))
+            _debug("⚠️ Não foi possível verificar conflitos — prosseguindo")
+
+        # 5. Busca ou cria cliente no Trinks
+        nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
+        if not nome_cliente or nome_cliente.strip().lower() in ("cliente", ""):
+            return {"erro": "Preciso do nome completo do cliente para criar o agendamento."}
+
+        tel_cliente = telefone or ""
+        cliente_id = args.get("cliente_trinks_id")  # já definido se veio de seleção múltipla
+
+        if not cliente_id:
+            try:
+                candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+            except Exception as e:
+                logger.warning("Erro ao buscar candidatos: %s", str(e))
+                candidatos = []
+
+            if len(candidatos) == 0:
+                try:
+                    novo = trinks_api.criar_cliente(nome_cliente, tel_cliente)
+                    cliente_id = novo.get("id") if novo else None
+                except Exception as e:
+                    logger.warning("Erro ao criar cliente: %s", str(e))
+
+                if not cliente_id:
+                    _debug("❌ Não foi possível registrar cliente '{}' no Trinks".format(nome_cliente))
+                    return {"erro": "Não foi possível registrar o cliente no sistema."}
+                _debug("✅ Cliente novo criado: {} | id={}".format(nome_cliente, cliente_id))
+
+            elif len(candidatos) == 1:
+                cliente_id = candidatos[0].get("id")
+                _debug("✅ Cliente: {} | id={}".format(candidatos[0].get("nome"), cliente_id))
+
+            else:
+                linhas = ["Encontrei {} cadastros 🔍 Qual é o seu?\n".format(len(candidatos))]
+                for i, c in enumerate(candidatos, 1):
+                    fones = c.get("telefones", [])
+                    tel_fmt = ""
+                    if fones:
+                        t = fones[0]
+                        tel_fmt = " – ({}) {}-{}".format(
+                            t.get("ddd", ""),
+                            t.get("telefone", "")[:5],
+                            t.get("telefone", "")[5:]
+                        )
+                    linhas.append("{}️⃣ {}{}".format(i, c.get("nome", "?"), tel_fmt))
+                linhas.append("\nResponda com o número correspondente.")
+                _debug("🔍 {} candidatos encontrados — aguardando seleção".format(len(candidatos)))
+                return {
+                    "aguardando_selecao": True,
+                    "candidatos": [{"indice": i+1, "id": c.get("id"), "nome": c.get("nome")}
+                                   for i, c in enumerate(candidatos)],
+                    "mensagem_usuario": "\n".join(linhas),
+                }
+
+        # 6. Cria agendamento
+        try:
+            estab_int = int(TRINKS_ESTABELECIMENTO_ID)
+        except (ValueError, TypeError):
+            estab_int = TRINKS_ESTABELECIMENTO_ID
+
+        servico_item = {
+            "servicoId": servico_id,
+            "estabelecimentoId": estab_int,
+            "duracaoEmMinutos": duracao_minutos,
+        }
+
+        payload = {
+            "estabelecimentoId": estab_int,
+            "clienteId": cliente_id,
+            "profissionalId": profissional_id,
+            "dataHora": data_hora_iso,
+            "servicos": [servico_item],
+            "observacao": "",
+        }
+
+        logger.info("Criando agendamento Trinks: %s", payload)
+        _debug("📤 Enviando: estab={} | clienteId={} | profId={} | servicoId={} | dur={}min | dataHora={}".format(
+            estab_int, cliente_id, profissional_id, servico_id, duracao_minutos, data_hora_iso))
+
+        resultado = trinks_api.criar_agendamento(payload)
+
+        if resultado:
+            ag_id = resultado.get("id", "")
+            _debug("✅ Agendamento criado! id={}".format(ag_id))
+            return {
+                "sucesso": True,
+                "agendamento_id": ag_id,
+                "servico": servico_nome,
+                "profissional": profissional_nome or "a definir pelo salão",
+                "data_hora": data_hora,
+                "cliente": nome_cliente,
+                "mensagem": "Agendamento criado com sucesso no sistema!",
+            }
+
+        _debug("❌ Falha ao criar agendamento — veja os logs do servidor")
+        return {"erro": "Falha ao criar agendamento no Trinks. Tente novamente ou ligue para o salão."}
+
+    # ── Prompt ────────────────────────────────────────────────
+
+    def _construir_system_prompt(self, cliente_info, historico_conversas=None):
+        nome_cliente = cliente_info.get("nome", "Cliente")
+        nome_conhecido = cliente_info.get("nome_conhecido", False)
+        is_primeira_vez = cliente_info.get("is_primeira_vez", False)
+        historico_servicos = cliente_info.get("historico_servicos", [])
+        preferencias = cliente_info.get("preferencias", {})
+
+        historico_str = ", ".join(historico_servicos[-5:]) if historico_servicos else "nenhum"
+        profissional_pref = preferencias.get("profissional_preferido", "qualquer")
+        horario_pref = preferencias.get("horario_preferido", "qualquer")
+
+        historico_text = ""
+        if historico_conversas:
+            historico_text = "\nHistórico recente:\n"
+            for conv in historico_conversas[-3:]:
+                historico_text += "Cliente: {}\nMarina: {}\n".format(
+                    conv.get("mensagem_usuario", ""),
+                    conv.get("resposta_marina", "")
+                )
+
+        sexo = cliente_info.get("sexo", "")
+        sexo_str = {"M": "Masculino", "F": "Feminino"}.get(sexo, "Não informado")
+        data_hoje = datetime.now().strftime("%d/%m/%Y")
+
+        if is_primeira_vez:
+            saudacao_instrucao = (
+                "PRIMEIRA CONVERSA: apresente-se brevemente e pergunte o nome do cliente. "
+                "Assim que ele informar, use salvar_dados_cliente para salvar."
+            )
+        elif nome_conhecido:
+            saudacao_instrucao = (
+                "CLIENTE CONHECIDO: use o nome '{}' para cumprimentar e personalizar todas as respostas."
+            ).format(nome_cliente)
+        else:
+            saudacao_instrucao = (
+                "NOME DESCONHECIDO: pergunte o nome do cliente na primeira oportunidade natural e salve com salvar_dados_cliente."
+            )
+
+        return (
+            "Você é a {nome}, assistente virtual do salão {salao}. Hoje é {data_hoje}.\n\n"
+            "PERFIL:\n"
+            "- Tom: profissional, amigável e acolhedora\n"
+            "- Objetivo: ajudar com agendamentos reais via sistema, serviços e recomendações\n\n"
+            "CLIENTE:\n"
+            "- Nome: {nome_cliente}\n"
+            "- Sexo: {sexo_str}\n"
+            "- Histórico de serviços: {historico_str}\n"
+            "- Profissional preferido: {profissional_pref}\n"
+            "- Horário preferido: {horario_pref}\n\n"
+            "SAUDAÇÃO: {saudacao_instrucao}\n\n"
+            "SERVIÇOS E PREÇOS (atualizados do sistema):\n"
+            "{servicos}\n\n"
+            "PROFISSIONAIS DISPONÍVEIS:\n"
+            "{profissionais}\n\n"
+            "INSTRUÇÕES:\n"
+            "1. Responda em português brasileiro\n"
+            "2. Seja breve (máximo 3 linhas por mensagem)\n"
+            "3. Use 1-2 emojis\n"
+            "4. Sempre use o nome do cliente quando conhecido\n"
+            "5. Sexo: se desconhecido e o serviço for corte de cabelo, pergunte 'masculino ou feminino?' e salve com salvar_dados_cliente\n"
+            "6. Para agendar: (1) pergunte serviço, profissional preferido e data, "
+            "(2) use verificar_disponibilidade para mostrar horários reais, "
+            "(3) confirme todos os dados com o cliente, "
+            "(4) use criar_agendamento — profissional_nome é OBRIGATÓRIO\n"
+            "7. Se profissional não for especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
+            "8. Após criar agendamento com sucesso, confirme os detalhes para o cliente"
+            "{historico_text}"
+        ).format(
+            nome=self.marina_name,
+            salao=self.salao_name,
+            data_hoje=data_hoje,
+            nome_cliente=nome_cliente,
+            sexo_str=sexo_str,
+            historico_str=historico_str,
+            profissional_pref=profissional_pref,
+            horario_pref=horario_pref,
+            saudacao_instrucao=saudacao_instrucao,
+            servicos=self._servicos_para_texto(),
+            profissionais=self._profissionais_para_texto(),
+            historico_text=historico_text,
+            profissionais_lista=self._profissionais_para_texto(),
+        )
+
+    # ── Fallback sem IA ───────────────────────────────────────
+
+    def _resposta_fallback(self, mensagem, cliente_info):
+        nome = cliente_info.get("nome", "")
+        saudacao = "Olá{}! ".format(", " + nome if nome and nome != "Cliente" else "")
+        m = mensagem.lower()
+
+        if any(p in m for p in ["serviço", "serviços", "fazem", "oferecem", "tem"]):
+            if _servicos_cache:
+                top = _servicos_cache[:10]
+                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)
+                return "{}Alguns dos nossos serviços 💇‍♀️:\n{}\n\nQuer agendar ou saber mais?".format(saudacao, lista)
+
+        if any(p in m for p in ["preço", "valor", "custa", "quanto"]):
+            if _servicos_cache:
+                top = _servicos_cache[:8]
+                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)
+                return "{}Nossos preços 💅:\n{}\n\nPosso agendar para você!".format(saudacao, lista)
+
+        if any(p in m for p in ["agendar", "marcar", "horário", "hora", "vaga", "disponível"]):
+            prof = self._profissionais_para_texto()
+            return "{}Adoraria agendar para você! ✨ Temos: {}.\nQual serviço e data você prefere?".format(saudacao, prof)
+
+        if any(p in m for p in ["oi", "olá", "opa", "bom dia", "boa tarde", "boa noite"]):
+            return "{}Sou a Marina, assistente virtual do {} 💚 Como posso te ajudar hoje?".format(saudacao, self.salao_name)
+
+        return "{}Sou a Marina, do {} 😊 Posso ajudar com serviços, preços e agendamentos. O que você precisa?".format(saudacao, self.salao_name)
+
+    # ── Interface pública ─────────────────────────────────────
+
+    def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,
+                                 db=None, telefone=None):
+        try:
+            system_prompt = self._construir_system_prompt(cliente_info, historico_conversas)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": mensagem},
+            ]
+
+            resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info)
+
+            if not resposta:
+                resposta = self._resposta_fallback(mensagem, cliente_info)
+
+            intencao = self._classificar_intencao(mensagem)
+            return resposta, intencao
+        except Exception as e:
+            logger.error("Erro ao processar: %s", str(e))
+            return "Desculpe, tive um problema técnico. Pode tentar novamente? 😊", "erro"
+
+    def _classificar_intencao(self, mensagem):
+        m = mensagem.lower()
+        if any(p in m for p in ["agendar", "marcar", "horário", "hora", "disponível", "vaga"]):
+            return "agendamento"
+        elif any(p in m for p in ["preço", "valor", "custa", "quanto"]):
+            return "consulta_preco"
+        elif any(p in m for p in ["serviço", "serviços", "fazem", "oferecem"]):
+            return "consulta_servicos"
+        elif any(p in m for p in ["cancelar", "desmarcar", "remarcar"]):
+            return "cancelamento"
+        elif any(p in m for p in ["oi", "olá", "opa", "bom dia", "boa tarde", "boa noite"]):
+            return "saudacao"
+        else:
+            return "consulta_geral"
+
+    def gerar_recomendacao(self, cliente_info):
+        try:
+            historico = cliente_info.get("historico_servicos", [])
+            nome = cliente_info.get("nome", "Cliente")
+            if not historico:
+                return "Que tal começar com um corte e escova? 💇‍♀️"
+            prompt = (
+                "Gere uma recomendação curta (1-2 linhas) para {}. "
+                "Histórico de serviços: {}. Serviços disponíveis: {}. Use 1 emoji."
+            ).format(nome, ", ".join(historico[-3:]), self._servicos_para_texto())
+            system = "Você é a {} do salão {}, assistente amigável.".format(self.marina_name, self.salao_name)
+            return self._chamar_gpt(system, prompt) or "Que tal agendar um serviço? 💇‍♀️"
+        except Exception as e:
+            logger.error("Erro recomendação: %s", str(e))
+            return "Que tal agendar um serviço conosco? 💇‍♀️"
+
+
+ai_core = AICoreMariana()
