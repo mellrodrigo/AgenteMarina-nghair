@@ -2,6 +2,7 @@
 Marina — Agente de IA para NGHair
 Flask + Gunicorn
 """
+import json
 import logging
 import os
 import sys
@@ -134,6 +135,7 @@ def webhook_whatsapp(event=None):
         # Áudio (ptt = push-to-talk / nota de voz)
         audio_msg = message.get('audioMessage') or message.get('pttMessage')
         if not texto and audio_msg and not key.get('fromMe'):
+            logger.info("AUDIO_PAYLOAD: %s", json.dumps(audio_msg)[:500])
             logger.info("Áudio recebido de %s — transcrevendo...", telefone)
             threading.Thread(
                 target=processar_audio_background,
