@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-criartabelas()
+criar_tabelas()
 
 
 # ── Sync Trinks automático ────────────────────────────────────
