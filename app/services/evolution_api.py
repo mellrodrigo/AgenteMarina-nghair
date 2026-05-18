@@ -84,6 +84,25 @@ class EvolutionAPIClient:
             logger.error("Erro ao verificar conexao: %s", str(e))
             return False
 
+    def baixar_midia(self, instance, message_key) -> bytes:
+        """Baixa mídia (áudio/imagem) de uma mensagem via Evolution API v2.
+        Retorna os bytes do arquivo ou None em caso de erro."""
+        try:
+            url = "{}/message/getBase64FromMediaMessage/{}".format(self.base_url, instance)
+            payload = {"key": message_key, "convertToMp4": False}
+            resp = requests.post(url, json=payload, headers=self._headers(), timeout=60)
+            if resp.status_code == 200:
+                data = resp.json()
+                b64 = data.get("base64") or data.get("data", {}).get("base64", "")
+                if b64:
+                    import base64
+                    return base64.b64decode(b64)
+            logger.error("Erro ao baixar mídia: %s %s", resp.status_code, resp.text[:200])
+            return None
+        except Exception as e:
+            logger.error("Exceção ao baixar mídia: %s", str(e))
+            return None
+
     def configurar_webhook(self, instance, webhook_url):
         """Configura webhook para receber mensagens"""
         try:

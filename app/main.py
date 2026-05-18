@@ -131,6 +131,17 @@ def webhook_whatsapp(event=None):
             message.get('imageMessage', {}).get('caption') or ''
         )
 
+        # Áudio (ptt = push-to-talk / nota de voz)
+        audio_msg = message.get('audioMessage') or message.get('pttMessage')
+        if not texto and audio_msg and not key.get('fromMe'):
+            logger.info("Áudio recebido de %s — transcrevendo...", telefone)
+            threading.Thread(
+                target=processar_audio_background,
+                args=(telefone, remote_jid, msg_data.get('key', {})),
+                daemon=True
+            ).start()
+            return jsonify({"status": "ok"}), 200
+
         if not texto or not telefone:
             return jsonify({"status": "ok"}), 200
 
@@ -147,6 +158,35 @@ def webhook_whatsapp(event=None):
     except Exception as e:
         logger.error("Erro no webhook: %s", str(e))
         return jsonify({"status": "error"}), 500
+
+
+def processar_audio_background(telefone, remote_jid, message_key):
+    """Baixa áudio, transcreve com Whisper e processa como texto normal."""
+    try:
+        audio_bytes = evolution_api_client.baixar_midia(WHATSAPP_INSTANCE_NAME, message_key)
+        if not audio_bytes:
+            logger.warning("Não foi possível baixar áudio de %s", telefone)
+            evolution_api_client.enviar_mensagem(
+                instance=WHATSAPP_INSTANCE_NAME,
+                numero=telefone,
+                mensagem="Não consegui ouvir seu áudio 😕 Pode digitar sua mensagem?"
+            )
+            return
+
+        texto = ai_core.transcrever_audio(audio_bytes)
+        if not texto:
+            evolution_api_client.enviar_mensagem(
+                instance=WHATSAPP_INSTANCE_NAME,
+                numero=telefone,
+                mensagem="Não consegui entender o áudio 😕 Pode digitar sua mensagem?"
+            )
+            return
+
+        logger.info("Áudio de %s transcrito: %s", telefone, texto[:100])
+        processar_mensagem_background(telefone, texto, remote_jid)
+
+    except Exception as e:
+        logger.error("Erro ao processar áudio de %s: %s", telefone, str(e))
 
 
 def processar_mensagem_background(telefone, texto, remote_jid):

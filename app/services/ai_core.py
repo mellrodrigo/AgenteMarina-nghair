@@ -93,6 +93,46 @@ class AICoreMariana:
         self.marina_name = MARINA_NAME
         self.salao_name = MARINA_SALAO
 
+    # ── Transcrição de áudio ──────────────────────────────────
+
+    def transcrever_audio(self, audio_bytes: bytes, mimetype: str = "audio/ogg") -> str:
+        """Transcreve áudio WhatsApp para texto usando OpenAI Whisper."""
+        import tempfile, os
+        global _client
+        if not _client:
+            _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
+        ext = "ogg"
+        if "mp4" in mimetype or "mp4a" in mimetype:
+            ext = "mp4"
+        elif "mpeg" in mimetype or "mp3" in mimetype:
+            ext = "mp3"
+        elif "webm" in mimetype:
+            ext = "webm"
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".{}".format(ext), delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            with open(tmp_path, "rb") as f:
+                result = _client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    language="pt",
+                )
+            os.unlink(tmp_path)
+            texto = result.text.strip()
+            logger.info("Whisper transcrição: %s", texto[:100])
+            return texto
+        except Exception as e:
+            logger.error("Erro Whisper: %s", str(e))
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            return ""
+
     # ── Cache Trinks ──────────────────────────────────────────
 
     def atualizar_contexto_trinks(self, db):
