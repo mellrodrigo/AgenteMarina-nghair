@@ -129,7 +129,7 @@ class TrinksAPIClient:
         itens = self._paginar("/v1/profissionais")
         profissionais = []
         for item in itens:
-            nome_exibicao = item.get("apelido") or item.get("nome", "")
+            nome_exibicao = (item.get("apelido") or item.get("nome", "")).strip()
             profissionais.append({
                 "id": item.get("id"),
                 "nome": nome_exibicao,

@@ -420,13 +420,15 @@ class AICoreMariana:
         profissional_id = None
         try:
             profissionais = trinks_api.listar_profissionais()
+            busca = profissional_nome.strip().lower()
+            partes = [p for p in busca.split() if len(p) > 2]
             for p in profissionais:
-                nome_apelido = p.get("nome", "").lower()
-                nome_completo = p.get("nome_completo", "").lower()
-                busca = profissional_nome.lower()
-                partes = busca.split()
+                nome_apelido = p.get("nome", "").strip().lower()
+                nome_completo = p.get("nome_completo", "").strip().lower()
                 if (busca in nome_apelido or busca in nome_completo or
-                        any(parte in nome_completo for parte in partes)):
+                        nome_apelido in busca or
+                        any(parte in nome_completo for parte in partes) or
+                        any(parte in nome_apelido for parte in partes)):
                     profissional_id = p["id"]
                     profissional_nome = p["nome_completo"] or p["nome"]
                     break
