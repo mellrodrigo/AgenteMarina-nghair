@@ -139,11 +139,24 @@ class TrinksAPIClient:
 
     # ── Clientes ──────────────────────────────────────────────
 
-    def listar_clientes(self, nome: str = None) -> List[Dict]:
-        """GET /v1/clientes?estabelecimentoId=...&nome=... — busca por nome"""
-        params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID}
+    @staticmethod
+    def _tel_para_trinks(telefone: str) -> str:
+        """Converte número WhatsApp (5511976820026) para formato Trinks (976820026).
+        Remove DDI (55) e DDD (2 dígitos)."""
+        tel = "".join(filter(str.isdigit, telefone))
+        if tel.startswith("55") and len(tel) >= 12:
+            tel = tel[2:]   # remove DDI 55
+        if len(tel) in (10, 11):
+            tel = tel[2:]   # remove DDD
+        return tel
+
+    def listar_clientes(self, nome: str = None, telefone: str = None) -> List[Dict]:
+        """GET /v1/clientes — busca por nome e/ou telefone (sem DDI/DDD)"""
+        params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID, "incluirDetalhes": "false"}
         if nome:
             params["nome"] = nome
+        if telefone:
+            params["telefone"] = telefone
         dados = self._get("/v1/clientes", params=params)
         if dados is None:
             return []
@@ -152,7 +165,7 @@ class TrinksAPIClient:
         return dados.get("data", [])
 
     def criar_cliente(self, nome: str, telefone: str) -> Optional[Dict]:
-        """POST /v1/clientes — payload correto com telefones[]"""
+        """POST /v1/clientes"""
         tel_clean = "".join(filter(str.isdigit, telefone))
         payload = {
             "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
@@ -164,48 +177,49 @@ class TrinksAPIClient:
             logger.info("Trinks: cliente criado nome=%s id=%s", nome, resultado.get("id"))
         return resultado
 
-    def buscar_cliente_por_telefone(self, telefone: str) -> Optional[Dict]:
-        """Pagina todos os clientes e filtra por telefone localmente.
-        A API Trinks não suporta filtro por telefone — comparação feita aqui."""
-        tel_clean = "".join(filter(str.isdigit, telefone))
-        tel_sem_ddi = tel_clean[2:] if tel_clean.startswith("55") and len(tel_clean) > 10 else tel_clean
+    def buscar_candidatos_cliente(self, nome: str, telefone: str) -> List[Dict]:
+        """Busca clientes por telefone, nome completo, primeiro nome e sobrenome.
+        Retorna lista única de candidatos sem duplicatas."""
+        candidatos = {}
 
-        params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID, "pageSize": 100, "page": 1}
-        pagina = 1
-        while True:
-            params["page"] = pagina
-            dados = self._get("/v1/clientes", params=params)
-            if not dados:
-                break
-            clientes = dados if isinstance(dados, list) else dados.get("data", [])
+        def _adicionar(clientes):
             for c in clientes:
-                for t in c.get("telefones", []):
-                    num = "".join(filter(str.isdigit, str(t.get("numero", ""))))
-                    if num and (num == tel_clean or num == tel_sem_ddi or
-                                tel_sem_ddi[-8:] == num[-8:]):
-                        logger.info("Trinks: cliente encontrado por telefone id=%s nome=%s", c.get("id"), c.get("nome"))
-                        return c
-            total_pages = dados.get("totalPages", 1) if isinstance(dados, dict) else 1
-            if pagina >= total_pages:
-                break
-            pagina += 1
-        return None
+                cid = c.get("id")
+                if cid and cid not in candidatos:
+                    candidatos[cid] = c
+
+        # 1. Busca por telefone (mais confiável)
+        if telefone:
+            tel_trinks = self._tel_para_trinks(telefone)
+            if tel_trinks:
+                _adicionar(self.listar_clientes(telefone=tel_trinks))
+                logger.info("Trinks busca por telefone=%s: %d resultado(s)", tel_trinks, len(candidatos))
+
+        # 2. Busca por nome completo
+        if nome and nome != "Cliente":
+            _adicionar(self.listar_clientes(nome=nome))
+
+            # 3. Busca por primeiro nome
+            partes = nome.strip().split()
+            if len(partes) > 1:
+                _adicionar(self.listar_clientes(nome=partes[0]))
+                # 4. Busca por sobrenome
+                _adicionar(self.listar_clientes(nome=partes[-1]))
+
+        logger.info("Trinks: %d candidato(s) encontrado(s) para nome='%s' tel='%s'",
+                    len(candidatos), nome, telefone)
+        return list(candidatos.values())
 
     def buscar_ou_criar_cliente(self, nome: str, telefone: str) -> Optional[int]:
-        """Retorna clienteId: busca por telefone, depois por nome, cria se não encontrar."""
-        # 1. Busca por telefone (mais confiável — ignora variações de nome)
-        if telefone:
-            cliente = self.buscar_cliente_por_telefone(telefone)
-            if cliente:
-                return cliente.get("id")
-
-        # 2. Busca por nome
-        if nome and nome != "Cliente":
-            clientes = self.listar_clientes(nome=nome)
-            if clientes:
-                cid = clientes[0].get("id")
-                logger.info("Trinks: cliente encontrado por nome id=%s", cid)
-                return cid
+        """Atalho simples: retorna id do primeiro candidato ou cria novo."""
+        candidatos = self.buscar_candidatos_cliente(nome, telefone)
+        if candidatos:
+            return candidatos[0].get("id")
+        resultado = self.criar_cliente(nome, telefone)
+        if resultado:
+            return resultado.get("id")
+        logger.warning("Trinks: não foi possível criar cliente %s", nome)
+        return None
 
         # 3. Cria novo cliente
         resultado = self.criar_cliente(nome, telefone)

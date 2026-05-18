@@ -115,6 +115,10 @@ TOOLS = [
                     "data_hora": {
                         "type": "string",
                         "description": "Data e hora no formato YYYY-MM-DD HH:MM (ex: 2024-06-15 10:00)"
+                    },
+                    "cliente_trinks_id": {
+                        "type": "integer",
+                        "description": "ID do cliente no Trinks — use quando o cliente já foi identificado após seleção múltipla"
                     }
                 },
                 "required": ["cliente_nome", "servico_nome", "data_hora"]
@@ -457,16 +461,54 @@ class AICoreMariana:
             return {"erro": "Preciso do nome completo do cliente para criar o agendamento."}
 
         tel_cliente = telefone or ""
-        cliente_id = None
-        try:
-            cliente_id = trinks_api.buscar_ou_criar_cliente(nome_cliente, tel_cliente)
-        except Exception as e:
-            logger.warning("Erro ao buscar/criar cliente Trinks: %s", str(e))
+        cliente_id = args.get("cliente_trinks_id")  # já definido se veio de seleção múltipla
 
         if not cliente_id:
-            _debug("❌ Não foi possível registrar cliente '{}' no Trinks".format(nome_cliente))
-            return {"erro": "Não foi possível registrar o cliente no sistema."}
-        _debug("✅ Cliente: {} | id={}".format(nome_cliente, cliente_id))
+            try:
+                candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+            except Exception as e:
+                logger.warning("Erro ao buscar candidatos: %s", str(e))
+                candidatos = []
+
+            if len(candidatos) == 0:
+                # Cria novo cliente
+                try:
+                    novo = trinks_api.criar_cliente(nome_cliente, tel_cliente)
+                    cliente_id = novo.get("id") if novo else None
+                except Exception as e:
+                    logger.warning("Erro ao criar cliente: %s", str(e))
+
+                if not cliente_id:
+                    _debug("❌ Não foi possível registrar cliente '{}' no Trinks".format(nome_cliente))
+                    return {"erro": "Não foi possível registrar o cliente no sistema."}
+                _debug("✅ Cliente novo criado: {} | id={}".format(nome_cliente, cliente_id))
+
+            elif len(candidatos) == 1:
+                cliente_id = candidatos[0].get("id")
+                _debug("✅ Cliente: {} | id={}".format(candidatos[0].get("nome"), cliente_id))
+
+            else:
+                # Múltiplos candidatos — apresenta opções para o cliente escolher
+                linhas = ["Encontrei {} cadastros 🔍 Qual é o seu?\n".format(len(candidatos))]
+                for i, c in enumerate(candidatos, 1):
+                    fones = c.get("telefones", [])
+                    tel_fmt = ""
+                    if fones:
+                        t = fones[0]
+                        tel_fmt = " – ({}) {}-{}".format(
+                            t.get("ddd", ""),
+                            t.get("telefone", "")[:5],
+                            t.get("telefone", "")[5:]
+                        )
+                    linhas.append("{}️⃣ {}{}".format(i, c.get("nome", "?"), tel_fmt))
+                linhas.append("\nResponda com o número correspondente.")
+                _debug("🔍 {} candidatos encontrados — aguardando seleção".format(len(candidatos)))
+                return {
+                    "aguardando_selecao": True,
+                    "candidatos": [{"indice": i+1, "id": c.get("id"), "nome": c.get("nome")}
+                                   for i, c in enumerate(candidatos)],
+                    "mensagem_usuario": "\n".join(linhas),
+                }
 
         # 6. Cria agendamento
         payload = {
