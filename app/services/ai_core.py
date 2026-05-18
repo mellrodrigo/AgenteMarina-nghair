@@ -348,36 +348,54 @@ class AICoreMariana:
 
     def _tool_criar_agendamento(self, args, telefone, cliente_info):
         from app.services.trinks_api import trinks_api
+        from app.services.evolution_api import evolution_api_client
+        from config import TRINKS_ESTABELECIMENTO_ID, WHATSAPP_INSTANCE_NAME
+
+        def _debug(msg):
+            """Envia mensagem de status no WhatsApp durante o fluxo (modo dev)."""
+            logger.info("[DEBUG-AGENDAMENTO] %s", msg)
+            try:
+                evolution_api_client.enviar_mensagem(
+                    instance=WHATSAPP_INSTANCE_NAME,
+                    numero=telefone,
+                    mensagem="🔧 *[DEV]* " + msg,
+                )
+            except Exception:
+                pass
 
         servico_nome = args.get("servico_nome", "")
         profissional_nome = args.get("profissional_nome", "")
         data_hora = args.get("data_hora", "")
 
-        # Valida e converte data/hora
+        # 1. Valida data/hora
         try:
             dt = datetime.strptime(data_hora, "%Y-%m-%d %H:%M")
             data_hora_iso = dt.isoformat()
         except ValueError:
-            return {"erro": "Formato de data/hora inválido. Use YYYY-MM-DD HH:MM (ex: 2024-06-15 10:00)"}
+            return {"erro": "Formato de data/hora inválido. Use YYYY-MM-DD HH:MM"}
 
-        # Busca IDs reais no Trinks
+        # 2. Busca serviço
         servico_id = None
         duracao_minutos = 60
-        profissional_id = None
-
         try:
-            from config import TRINKS_ESTABELECIMENTO_ID
             servicos = trinks_api.listar_servicos()
             for s in servicos:
                 if servico_nome.lower() in s["nome"].lower():
                     servico_id = s["id"]
-                    servico_nome = s["nome"]  # usa nome exato
+                    servico_nome = s["nome"]
                     duracao_minutos = int(s.get("duracao_minutos") or 60)
                     break
+        except Exception as e:
+            logger.error("Erro buscando serviço: %s", str(e))
 
-            if not servico_id:
-                return {"erro": "Serviço '{}' não encontrado no sistema. Verifique o nome.".format(servico_nome)}
+        if not servico_id:
+            _debug("❌ Serviço não encontrado: '{}'".format(servico_nome))
+            return {"erro": "Serviço '{}' não encontrado no sistema.".format(servico_nome)}
+        _debug("✅ Serviço: {} | id={} | duração={}min".format(servico_nome, servico_id, duracao_minutos))
 
+        # 3. Busca profissional
+        profissional_id = None
+        try:
             if profissional_nome:
                 profissionais = trinks_api.listar_profissionais()
                 for p in profissionais:
@@ -386,26 +404,58 @@ class AICoreMariana:
                         profissional_nome = p["nome"]
                         break
         except Exception as e:
-            logger.error("Erro buscando IDs para agendamento: %s", str(e))
-            return {"erro": "Erro ao buscar dados do serviço/profissional"}
+            logger.error("Erro buscando profissional: %s", str(e))
 
-        # Busca ou cria cliente no Trinks
+        if profissional_nome and not profissional_id:
+            _debug("⚠️ Profissional '{}' não encontrado — agendando sem profissional fixo".format(profissional_nome))
+        elif profissional_id:
+            _debug("✅ Profissional: {} | id={}".format(profissional_nome, profissional_id))
+
+        # 4. Verifica conflito de horário
+        data_apenas = dt.strftime("%Y-%m-%d")
+        hora_desejada = dt.strftime("%H:%M")
+        try:
+            agendamentos_dia = trinks_api.listar_agendamentos(data_inicio=data_apenas, data_fim=data_apenas)
+            conflitos = []
+            for ag in agendamentos_dia:
+                if profissional_id and ag.get("profissional_id") != profissional_id:
+                    continue
+                ag_hora = ag.get("data_hora", "")
+                if ag_hora and hora_desejada in ag_hora:
+                    conflitos.append(ag)
+
+            if conflitos:
+                c = conflitos[0]
+                _debug("⚠️ Conflito: {} já tem agendamento às {} com {} (id={})".format(
+                    profissional_nome or "profissional", hora_desejada,
+                    c.get("cliente", "?"), c.get("id", "?")))
+                return {
+                    "erro": "Já existe um agendamento às {} para {}. Escolha outro horário.".format(
+                        hora_desejada, profissional_nome or "esse profissional")
+                }
+            _debug("✅ Horário {} livre em {}".format(hora_desejada, data_apenas))
+        except Exception as e:
+            logger.warning("Erro ao verificar conflitos: %s", str(e))
+            _debug("⚠️ Não foi possível verificar conflitos — prosseguindo")
+
+        # 5. Busca ou cria cliente no Trinks
         nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
         if not nome_cliente or nome_cliente.strip().lower() in ("cliente", ""):
-            return {"erro": "Preciso do nome completo do cliente para criar o agendamento. Por favor, pergunte o nome."}
+            return {"erro": "Preciso do nome completo do cliente para criar o agendamento."}
 
         tel_cliente = telefone or ""
         cliente_id = None
-
         try:
             cliente_id = trinks_api.buscar_ou_criar_cliente(nome_cliente, tel_cliente)
         except Exception as e:
             logger.warning("Erro ao buscar/criar cliente Trinks: %s", str(e))
 
         if not cliente_id:
-            return {"erro": "Não foi possível registrar o cliente no sistema. Tente novamente ou entre em contato com o salão."}
+            _debug("❌ Não foi possível registrar cliente '{}' no Trinks".format(nome_cliente))
+            return {"erro": "Não foi possível registrar o cliente no sistema."}
+        _debug("✅ Cliente: {} | id={}".format(nome_cliente, cliente_id))
 
-        # Monta payload correto conforme documentação Trinks
+        # 6. Cria agendamento
         payload = {
             "estabelecimentoId": int(TRINKS_ESTABELECIMENTO_ID),
             "clienteId": cliente_id,
@@ -417,10 +467,14 @@ class AICoreMariana:
             payload["profissionalId"] = profissional_id
 
         logger.info("Criando agendamento Trinks: %s", payload)
+        _debug("📤 Enviando agendamento: clienteId={} | servicoId={} | dataHora={}".format(
+            cliente_id, servico_id, data_hora_iso))
+
         resultado = trinks_api.criar_agendamento(payload)
 
         if resultado:
             ag_id = resultado.get("id", "")
+            _debug("✅ Agendamento criado! id={}".format(ag_id))
             return {
                 "sucesso": True,
                 "agendamento_id": ag_id,
@@ -431,9 +485,8 @@ class AICoreMariana:
                 "mensagem": "Agendamento criado com sucesso no sistema!",
             }
 
-        return {
-            "erro": "Falha ao criar agendamento no Trinks. Tente novamente ou ligue para o salão.",
-        }
+        _debug("❌ Falha ao criar agendamento — veja os logs do servidor")
+        return {"erro": "Falha ao criar agendamento no Trinks. Tente novamente ou ligue para o salão."}
 
     # ── Prompt ────────────────────────────────────────────────
 
