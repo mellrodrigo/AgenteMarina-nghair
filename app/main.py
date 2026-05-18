@@ -161,11 +161,11 @@ def webhook_whatsapp(event=None):
 
 
 def processar_audio_background(telefone, remote_jid, msg_data):
-    """Baixa áudio, transcreve com Whisper e processa como texto normal."""
+    """Extrai base64 do payload, transcreve com Whisper e processa como texto normal."""
     try:
-        audio_bytes = evolution_api_client.baixar_midia(WHATSAPP_INSTANCE_NAME, msg_data)
+        audio_bytes, mimetype = evolution_api_client.extrair_audio_base64(msg_data)
         if not audio_bytes:
-            logger.warning("Não foi possível baixar áudio de %s", telefone)
+            logger.warning("Não foi possível extrair áudio de %s", telefone)
             evolution_api_client.enviar_mensagem(
                 instance=WHATSAPP_INSTANCE_NAME,
                 numero=telefone,
@@ -173,7 +173,7 @@ def processar_audio_background(telefone, remote_jid, msg_data):
             )
             return
 
-        texto = ai_core.transcrever_audio(audio_bytes)
+        texto = ai_core.transcrever_audio(audio_bytes, mimetype or "audio/ogg")
         if not texto:
             evolution_api_client.enviar_mensagem(
                 instance=WHATSAPP_INSTANCE_NAME,

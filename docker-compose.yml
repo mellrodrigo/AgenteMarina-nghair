@@ -69,6 +69,8 @@ services:
       - WEBHOOK_EVENTS_PRESENCE_UPDATE=false
       - WEBHOOK_EVENTS_CONTACTS_UPDATE=false
       - WEBHOOK_EVENTS_CHATS_UPDATE=false
+      # Webhook: inclui base64 de mídias (áudio, imagem) no payload
+      - WEBHOOK_GLOBAL_BASE64=true
       # QR Code
       - QRCODE_LIMIT=30
       - QRCODE_COLOR=#25D366

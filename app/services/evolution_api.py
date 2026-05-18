@@ -84,38 +84,24 @@ class EvolutionAPIClient:
             logger.error("Erro ao verificar conexao: %s", str(e))
             return False
 
-    def baixar_midia(self, instance, msg_data: dict) -> bytes:
-        """Baixa mídia (áudio) de uma mensagem via Evolution API v2.
-        Recebe o objeto msg_data completo do webhook. Retorna bytes ou None."""
+    def extrair_audio_base64(self, msg_data: dict):
+        """Extrai bytes de áudio do payload do webhook (requer WEBHOOK_GLOBAL_BASE64=true).
+        Retorna (bytes, mimetype) ou (None, None)."""
         import base64 as b64lib
-
-        # Tenta extrair base64 diretamente do payload do webhook (se WEBHOOK_BASE64=true)
         msg = msg_data.get("message", {})
         for campo in ["audioMessage", "pttMessage"]:
             audio = msg.get(campo, {})
-            if isinstance(audio, dict) and audio.get("base64"):
+            if not isinstance(audio, dict):
+                continue
+            b64 = audio.get("base64", "")
+            if b64:
                 try:
-                    return b64lib.b64decode(audio["base64"])
-                except Exception:
-                    pass
-
-        # Fallback: chama endpoint do Evolution API para buscar base64
-        url = "{}/chat/getBase64FromMediaMessage/{}".format(self.base_url, instance)
-        payload = {"message": msg_data, "convertToMp4": False}
-        try:
-            resp = requests.post(url, json=payload, headers=self._headers(), timeout=60)
-            if resp.status_code == 200:
-                data = resp.json()
-                b64 = (data.get("base64") or
-                       data.get("data", {}).get("base64", "") or
-                       data.get("mediaData", {}).get("base64", ""))
-                if b64:
-                    return b64lib.b64decode(b64)
-            logger.error("Erro ao baixar mídia: %s %s", resp.status_code, resp.text[:300])
-            return None
-        except Exception as e:
-            logger.error("Exceção ao baixar mídia: %s", str(e))
-            return None
+                    mime = audio.get("mimetype", "audio/ogg; codecs=opus")
+                    return b64lib.b64decode(b64), mime
+                except Exception as e:
+                    logger.error("Erro ao decodificar base64 de áudio: %s", str(e))
+        logger.warning("Base64 de áudio não encontrado no payload. Verifique WEBHOOK_GLOBAL_BASE64=true")
+        return None, None
 
     def configurar_webhook(self, instance, webhook_url):
         """Configura webhook para receber mensagens"""
