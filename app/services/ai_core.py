@@ -121,7 +121,7 @@ TOOLS = [
                         "description": "ID do cliente no Trinks — use quando o cliente já foi identificado após seleção múltipla"
                     }
                 },
-                "required": ["cliente_nome", "servico_nome", "data_hora"]
+                "required": ["cliente_nome", "servico_nome", "profissional_nome", "data_hora"]
             }
         }
     }
@@ -410,23 +410,34 @@ class AICoreMariana:
             return {"erro": "Serviço '{}' não encontrado no sistema.".format(servico_nome)}
         _debug("✅ Serviço: {} | id={} | duração={}min".format(servico_nome, servico_id, duracao_minutos))
 
-        # 3. Busca profissional
+        # 3. Busca profissional — checa apelido e nome completo
         profissional_id = None
         try:
-            if profissional_nome:
-                profissionais = trinks_api.listar_profissionais()
-                for p in profissionais:
-                    if profissional_nome.lower() in p["nome"].lower():
-                        profissional_id = p["id"]
-                        profissional_nome = p["nome"]
-                        break
+            profissionais = trinks_api.listar_profissionais()
+            for p in profissionais:
+                nome_apelido = p.get("nome", "").lower()
+                nome_completo = p.get("nome_completo", "").lower()
+                busca = profissional_nome.lower()
+                partes = busca.split()
+                if (busca in nome_apelido or busca in nome_completo or
+                        any(parte in nome_completo for parte in partes)):
+                    profissional_id = p["id"]
+                    profissional_nome = p["nome_completo"] or p["nome"]
+                    break
         except Exception as e:
             logger.error("Erro buscando profissional: %s", str(e))
 
-        if profissional_nome and not profissional_id:
-            _debug("⚠️ Profissional '{}' não encontrado — agendando sem profissional fixo".format(profissional_nome))
-        elif profissional_id:
-            _debug("✅ Profissional: {} | id={}".format(profissional_nome, profissional_id))
+        if not profissional_id:
+            try:
+                profissionais = profissionais if 'profissionais' in dir() else trinks_api.listar_profissionais()
+            except Exception:
+                profissionais = []
+            lista = "\n".join("{}️⃣ {}".format(i+1, p["nome_completo"] or p["nome"])
+                              for i, p in enumerate(profissionais))
+            _debug("⚠️ Profissional '{}' não encontrado".format(profissional_nome))
+            return {
+                "erro": "Profissional não encontrado. Qual profissional você prefere?\n\n{}".format(lista),
+            }
 
         # 4. Verifica conflito de horário
         data_apenas = dt.strftime("%Y-%m-%d")
@@ -514,12 +525,11 @@ class AICoreMariana:
         payload = {
             "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
             "clienteId": cliente_id,
+            "profissionalId": profissional_id,
             "dataHora": data_hora_iso,
             "servicos": [{"servicoId": servico_id, "duracao": duracao_minutos}],
             "observacao": "",
         }
-        if profissional_id:
-            payload["profissionalId"] = profissional_id
 
         logger.info("Criando agendamento Trinks: %s", payload)
         _debug("📤 Enviando agendamento: clienteId={} | servicoId={} | dataHora={}".format(
@@ -605,11 +615,12 @@ class AICoreMariana:
             "3. Use 1-2 emojis\n"
             "4. Sempre use o nome do cliente quando conhecido\n"
             "5. Sexo: se desconhecido e o serviço for corte de cabelo, pergunte 'masculino ou feminino?' e salve com salvar_dados_cliente\n"
-            "6. Para agendar: (1) pergunte serviço desejado e data preferida, "
+            "6. Para agendar: (1) pergunte serviço, profissional preferido e data, "
             "(2) use verificar_disponibilidade para mostrar horários reais, "
-            "(3) confirme serviço + data + horário com o cliente, "
-            "(4) use criar_agendamento para registrar no sistema\n"
-            "7. Após criar agendamento com sucesso, confirme os detalhes para o cliente"
+            "(3) confirme todos os dados com o cliente, "
+            "(4) use criar_agendamento — profissional_nome é OBRIGATÓRIO\n"
+            "7. Se profissional não for especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
+            "8. Após criar agendamento com sucesso, confirme os detalhes para o cliente"
             "{historico_text}"
         ).format(
             nome=self.marina_name,
@@ -624,6 +635,7 @@ class AICoreMariana:
             servicos=self._servicos_para_texto(),
             profissionais=self._profissionais_para_texto(),
             historico_text=historico_text,
+            profissionais_lista=self._profissionais_para_texto(),
         )
 
     # ── Fallback sem IA ───────────────────────────────────────
