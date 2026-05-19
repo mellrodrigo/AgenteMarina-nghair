@@ -230,13 +230,11 @@ class AICoreMariana:
                     time.sleep(2 ** attempt)
         return None
 
-    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info, forcar_tool=False):
+    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info):
         """Chama GPT com function calling; executa tools e retorna resposta final."""
         global _client
         if not _client:
             _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-
-        tool_choice = {"type": "function", "function": {"name": "criar_agendamento"}} if forcar_tool else "auto"
 
         for attempt in range(3):
             try:
@@ -758,9 +756,7 @@ class AICoreMariana:
 
             messages.append({"role": "user", "content": mensagem})
 
-            confirmacao = self._e_confirmacao(mensagem, historico_conversas)
-            resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info,
-                                                   forcar_tool=confirmacao)
+            resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info)
 
             if not resposta:
                 resposta = self._resposta_fallback(mensagem, cliente_info)
