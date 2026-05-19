@@ -310,11 +310,12 @@ class TrinksAPIClient:
             logger.info("Trinks: agendamento criado id=%s", resultado.get("id"))
         return resultado
 
-    def cancelar_agendamento(self, agendamento_id: int) -> bool:
-        """DELETE /v1/agendamentos/{id}"""
-        url = "{}/v1/agendamentos/{}".format(self.base_url, agendamento_id)
+    def cancelar_agendamento(self, agendamento_id: int, motivo: str = "") -> bool:
+        """PATCH /v1/agendamentos/{id}/status/cancelado"""
+        url = "{}/v1/agendamentos/{}/status/cancelado".format(self.base_url, agendamento_id)
+        payload = {"quemCancelou": 0, "motivo": motivo or ""}
         try:
-            resp = self.session.delete(url, timeout=30)
+            resp = self.session.patch(url, json=payload, timeout=30)
             if resp.ok:
                 logger.info("Trinks: agendamento %s cancelado", agendamento_id)
                 return True

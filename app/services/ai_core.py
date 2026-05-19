@@ -605,8 +605,9 @@ class AICoreMariana:
         if not agendamento_id:
             return {"erro": "ID do agendamento é obrigatório para cancelar."}
 
+        motivo = args.get("motivo", "")
         _debug("📤 Cancelando agendamento id={}".format(agendamento_id))
-        resultado = trinks_api.cancelar_agendamento(agendamento_id)
+        resultado = trinks_api.cancelar_agendamento(agendamento_id, motivo=motivo)
 
         if resultado is True:
             _debug("✅ Agendamento {} cancelado!".format(agendamento_id))
