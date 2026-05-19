@@ -91,7 +91,7 @@ TOOLS = [
             "name": "listar_agendamentos_cliente",
             "description": (
                 "Lista os agendamentos futuros do cliente no Trinks. "
-                "Use quando o cliente perguntar sobre seus agendamentos ou quiser cancelar um."
+                "Use quando o cliente quiser ver seus agendamentos ou quando precisar cancelar e o ID não estiver no histórico da conversa."
             ),
             "parameters": {
                 "type": "object",
@@ -242,7 +242,7 @@ class AICoreMariana:
                     model=OPENAI_MODEL,
                     messages=messages,
                     tools=TOOLS,
-                    tool_choice=tool_choice,
+                    tool_choice="auto",
                     temperature=0.7,
                     max_tokens=512,
                 )
@@ -678,9 +678,12 @@ class AICoreMariana:
             "SEM ID DA API = NÃO CONFIRME O AGENDAMENTO. Se não receber ID, informe que houve falha.\n"
             "9. CRÍTICO: quando o cliente confirmar (disser sim/ok/pode/confirmo), chame criar_agendamento "
             "IMEDIATAMENTE usando os dados do histórico. NUNCA diga que agendou sem ter chamado a função.\n"
-            "10. Para cancelar: use listar_agendamentos_cliente para mostrar os agendamentos, "
-            "confirme qual o cliente quer cancelar, depois chame cancelar_agendamento com o ID. "
-            "Após cancelar, confirme com o ID do agendamento cancelado.\n"
+            "10. CANCELAMENTO — fluxo obrigatório:\n"
+            "   a) PRIMEIRO verifique o histórico desta conversa: se já mencionamos um ID de agendamento, use-o diretamente.\n"
+            "   b) Se NÃO houver ID no histórico, chame listar_agendamentos_cliente para listar os agendamentos futuros do cliente.\n"
+            "   c) Apresente a lista numerada e peça para o cliente escolher qual quer cancelar.\n"
+            "   d) Após a confirmação do cliente, chame cancelar_agendamento com o ID escolhido.\n"
+            "   e) Confirme o cancelamento informando o ID do agendamento cancelado.\n"
             "11. NUNCA invente IDs ou confirme operações sem retorno sucesso=True da função."
         ).format(
             nome=self.marina_name,
