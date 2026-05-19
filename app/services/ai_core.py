@@ -531,10 +531,9 @@ class AICoreMariana:
         except (ValueError, TypeError):
             estab_int = TRINKS_ESTABELECIMENTO_ID
 
+        # Trinks espera servicoEstabelecimentoId — o id de /v1/servicos já é o vínculo estabelecimento-serviço
         servico_item = {
-            "servicoId": servico_id,
-            "estabelecimentoId": estab_int,
-            "duracaoEmMinutos": duracao_minutos,
+            "servicoEstabelecimentoId": servico_id,
         }
 
         payload = {
@@ -547,8 +546,8 @@ class AICoreMariana:
         }
 
         logger.info("Criando agendamento Trinks: %s", payload)
-        _debug("📤 Enviando: estab={} | clienteId={} | profId={} | servicoId={} | dur={}min | dataHora={}".format(
-            estab_int, cliente_id, profissional_id, servico_id, duracao_minutos, data_hora_iso))
+        _debug("📤 Enviando: estab={} | clienteId={} | profId={} | servicoEstabId={} | dataHora={}".format(
+            estab_int, cliente_id, profissional_id, servico_id, data_hora_iso))
 
         resultado = trinks_api.criar_agendamento(payload)
 
