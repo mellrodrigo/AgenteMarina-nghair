@@ -221,6 +221,26 @@ class TrinksAPIClient:
             return resultado.get("id")
         return None
 
+    def buscar_cliente_por_id(self, cliente_id: int) -> Optional[Dict]:
+        """GET /v1/clientes/{id}"""
+        dados = self._get("/v1/clientes/{}".format(cliente_id))
+        return dados
+
+    def atualizar_cliente(self, cliente_id: int, dados: dict) -> bool:
+        """PUT /v1/clientes/{id}"""
+        url = "{}/v1/clientes/{}".format(self.base_url, cliente_id)
+        try:
+            resp = self.session.put(url, json=dados, timeout=30)
+            if resp.ok:
+                logger.info("Trinks: cliente %s atualizado", cliente_id)
+                return True
+            logger.error("Trinks: falha ao atualizar cliente %s: %s %s",
+                         cliente_id, resp.status_code, resp.text[:500])
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error("Trinks: erro ao atualizar cliente %s: %s", cliente_id, str(e))
+            return False
+
     # ── Disponibilidade ───────────────────────────────
 
     def horarios_disponiveis(self, data: str, servico_id: int = None, profissional_id: int = None) -> List[str]:

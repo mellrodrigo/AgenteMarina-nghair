@@ -122,6 +122,44 @@ TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "validar_dados_cliente",
+            "description": (
+                "Busca os dados cadastrais do cliente no Trinks (nome, telefone, email, CPF, gênero) "
+                "e os apresenta para confirmação antes de criar um agendamento. "
+                "Chame SEMPRE antes de criar_agendamento."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cliente_nome": {"type": "string", "description": "Nome do cliente para buscar no Trinks"},
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "atualizar_dados_cliente",
+            "description": (
+                "Atualiza os dados cadastrais do cliente no Trinks via PUT. "
+                "Use quando o cliente informar que algum dado está incorreto."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nome": {"type": "string", "description": "Nome completo"},
+                    "email": {"type": "string", "description": "E-mail"},
+                    "cpf": {"type": "string", "description": "CPF (somente números)"},
+                    "genero": {"type": "string", "description": "Gênero: Masculino ou Feminino"},
+                },
+                "required": []
+            }
+        }
+    },
 ]
 
 
@@ -300,7 +338,100 @@ class AICoreMariana:
             return self._tool_listar_agendamentos_cliente(args, telefone, cliente_info)
         elif nome == "cancelar_agendamento":
             return self._tool_cancelar_agendamento(args, telefone)
+        elif nome == "validar_dados_cliente":
+            return self._tool_validar_dados_cliente(args, telefone, cliente_info)
+        elif nome == "atualizar_dados_cliente":
+            return self._tool_atualizar_dados_cliente(args, telefone, cliente_info)
         return {"erro": "Ferramenta desconhecida: {}".format(nome)}
+
+    def _tool_validar_dados_cliente(self, args, telefone, cliente_info):
+        from app.services.trinks_api import trinks_api
+        nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
+        tel_cliente = telefone or ""
+
+        cliente_id = None
+        cliente_trinks = None
+        try:
+            candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+            if candidatos:
+                cliente_id = candidatos[0].get("id")
+                cliente_info["_trinks_id"] = cliente_id
+                try:
+                    cliente_trinks = trinks_api.buscar_cliente_por_id(cliente_id)
+                except Exception:
+                    cliente_trinks = candidatos[0]
+        except Exception as e:
+            logger.warning("Erro ao buscar cliente para validação: %s", str(e))
+
+        if not cliente_trinks:
+            return {"erro": "Não foi possível localizar o cadastro do cliente no Trinks."}
+
+        fones = cliente_trinks.get("telefones", [])
+        tel_fmt = ""
+        if fones:
+            t = fones[0]
+            tel_fmt = "({}) {}-{}".format(
+                t.get("ddd", ""), t.get("telefone", "")[:5], t.get("telefone", "")[5:])
+
+        return {
+            "cliente_id": cliente_id,
+            "nome": cliente_trinks.get("nome", ""),
+            "email": cliente_trinks.get("email", "") or "não informado",
+            "cpf": cliente_trinks.get("cpf", "") or "não informado",
+            "genero": cliente_trinks.get("genero", "") or "não informado",
+            "telefone": tel_fmt or "não informado",
+            "mensagem": (
+                "Dados cadastrados no Trinks:\n"
+                "• Nome: {}\n• Telefone: {}\n• E-mail: {}\n• CPF: {}\n• Gênero: {}\n\n"
+                "Algum dado está incorreto?"
+            ).format(
+                cliente_trinks.get("nome", ""),
+                tel_fmt or "não informado",
+                cliente_trinks.get("email", "") or "não informado",
+                cliente_trinks.get("cpf", "") or "não informado",
+                cliente_trinks.get("genero", "") or "não informado",
+            ),
+        }
+
+    def _tool_atualizar_dados_cliente(self, args, telefone, cliente_info):
+        from app.services.trinks_api import trinks_api
+        from datetime import datetime
+
+        cliente_id = cliente_info.get("_trinks_id")
+        if not cliente_id:
+            nome_cliente = cliente_info.get("nome", "")
+            try:
+                candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, telefone or "")
+                if candidatos:
+                    cliente_id = candidatos[0].get("id")
+                    cliente_info["_trinks_id"] = cliente_id
+            except Exception as e:
+                logger.warning("Erro ao buscar cliente para atualização: %s", str(e))
+
+        if not cliente_id:
+            return {"erro": "Não foi possível localizar o cliente para atualização."}
+
+        agora = datetime.now().strftime("%Y-%m-%d %H:%M")
+        payload = {"observacoes": "Data de atualização: {}".format(agora)}
+        if args.get("nome"):
+            payload["nome"] = args["nome"]
+        if args.get("email"):
+            payload["email"] = args["email"]
+        if args.get("cpf"):
+            payload["cpf"] = "".join(filter(str.isdigit, args["cpf"]))
+        if args.get("genero"):
+            payload["genero"] = args["genero"]
+
+        ok = trinks_api.atualizar_cliente(cliente_id, payload)
+        if ok:
+            campos = [k for k in ("nome", "email", "cpf", "genero") if k in payload]
+            return {
+                "sucesso": True,
+                "campos_atualizados": campos,
+                "data_atualizacao": agora,
+                "mensagem": "Cadastro atualizado com sucesso em {}!".format(agora),
+            }
+        return {"erro": "Não foi possível atualizar o cadastro. Tente novamente."}
 
     def _tool_salvar_dados_cliente(self, args, db, cliente_info):
         from app.services.cliente_service import cliente_service
@@ -663,9 +794,11 @@ class AICoreMariana:
             "4. Sempre use o nome do cliente quando conhecido\n"
             "5. Sexo: se desconhecido e serviço for corte, pergunte 'masculino ou feminino?' e salve\n"
             "6. Para agendar: (1) pergunte serviço, profissional e data/hora, "
-            "(2) quando tiver TODOS os dados, chame criar_agendamento diretamente — "
-            "NÃO chame verificar_disponibilidade se o cliente já informou o horário. "
-            "Use verificar_disponibilidade SOMENTE se o cliente pedir 'que horas tem?' ou não souber qual horário quer. "
+            "(2) chame validar_dados_cliente para mostrar os dados cadastrais do cliente e pedir confirmação, "
+            "(3) se o cliente disser que algum dado está errado, peça a correção e chame atualizar_dados_cliente, "
+            "(4) após confirmação dos dados, chame criar_agendamento. "
+            "NÃO chame verificar_disponibilidade se o cliente já informou o horário — "
+            "use verificar_disponibilidade SOMENTE se o cliente pedir sugestões de horário. "
             "Se o cliente quiser MÚLTIPLOS serviços (ex: cabelo + manicure), chame criar_agendamento "
             "uma vez para cada serviço — cada um pode ter profissional diferente.\n"
             "7. Se profissional não especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
