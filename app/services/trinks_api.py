@@ -313,7 +313,10 @@ class TrinksAPIClient:
     def cancelar_agendamento(self, agendamento_id: int, motivo: str = "") -> bool:
         """PATCH /v1/agendamentos/{id}/status/cancelado"""
         url = "{}/v1/agendamentos/{}/status/cancelado".format(self.base_url, agendamento_id)
-        payload = {"quemCancelou": 0, "motivo": motivo or ""}
+        payload = {
+            "quemCancelou": 1,  # 1=cliente, 2=profissional, 3=estabelecimento, 4=outro
+            "motivo": motivo or "Cancelado pelo cliente via WhatsApp",
+        }
         try:
             resp = self.session.patch(url, json=payload, timeout=30)
             if resp.ok:
