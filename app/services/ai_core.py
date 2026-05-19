@@ -20,7 +20,7 @@ _client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 _servicos_cache = []     # [{id_local, nome, preco, duracao_minutos}]
 _profissionais_cache = []  # [nome]
 
-# ── Ferramentas (function calling) ───────────────────────────
+# ── Ferramentas (function calling) ──────────────────────────────
 
 TOOLS = [
     {
@@ -34,27 +34,11 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "nome": {
-                        "type": "string",
-                        "description": "Nome completo do cliente"
-                    },
-                    "profissional_preferido": {
-                        "type": "string",
-                        "description": "Nome do profissional preferido"
-                    },
-                    "servico_preferido": {
-                        "type": "string",
-                        "description": "Serviço que o cliente costuma fazer"
-                    },
-                    "horario_preferido": {
-                        "type": "string",
-                        "description": "Horário preferido (ex: manhã, tarde, 14h)"
-                    },
-                    "sexo": {
-                        "type": "string",
-                        "enum": ["M", "F"],
-                        "description": "Sexo do cliente: M para masculino, F para feminino"
-                    }
+                    "nome": {"type": "string", "description": "Nome completo do cliente"},
+                    "profissional_preferido": {"type": "string", "description": "Nome do profissional preferido"},
+                    "servico_preferido": {"type": "string", "description": "Serviço que o cliente costuma fazer"},
+                    "horario_preferido": {"type": "string", "description": "Horário preferido (ex: manhã, tarde, 14h)"},
+                    "sexo": {"type": "string", "enum": ["M", "F"], "description": "Sexo do cliente: M ou F"},
                 },
                 "required": []
             }
@@ -71,18 +55,9 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "data": {
-                        "type": "string",
-                        "description": "Data no formato YYYY-MM-DD (ex: 2024-06-15)"
-                    },
-                    "servico_nome": {
-                        "type": "string",
-                        "description": "Nome do serviço desejado (ex: Corte Feminino)"
-                    },
-                    "profissional_nome": {
-                        "type": "string",
-                        "description": "Nome do profissional preferido (opcional)"
-                    }
+                    "data": {"type": "string", "description": "Data no formato YYYY-MM-DD (ex: 2024-06-15)"},
+                    "servico_nome": {"type": "string", "description": "Nome do serviço desejado"},
+                    "profissional_nome": {"type": "string", "description": "Nome do profissional preferido (opcional)"},
                 },
                 "required": ["data"]
             }
@@ -95,36 +70,56 @@ TOOLS = [
             "description": (
                 "Cria o agendamento real no sistema Trinks. "
                 "Use SOMENTE quando o cliente já confirmou: nome completo, serviço, data e horário. "
-                "Pergunte TODOS os dados antes de chamar esta função, inclusive o nome completo do cliente."
+                "Pergunte TODOS os dados antes de chamar, inclusive o nome completo do cliente."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "cliente_nome": {
-                        "type": "string",
-                        "description": "Nome completo do cliente (obrigatório, pergunte antes de agendar)"
-                    },
-                    "servico_nome": {
-                        "type": "string",
-                        "description": "Nome exato do serviço (ex: Corte Feminino)"
-                    },
-                    "profissional_nome": {
-                        "type": "string",
-                        "description": "Nome do profissional (deixe vazio se não tiver preferência)"
-                    },
-                    "data_hora": {
-                        "type": "string",
-                        "description": "Data e hora no formato YYYY-MM-DD HH:MM (ex: 2024-06-15 10:00)"
-                    },
-                    "cliente_trinks_id": {
-                        "type": "integer",
-                        "description": "ID do cliente no Trinks — use quando o cliente já foi identificado após seleção múltipla"
-                    }
+                    "cliente_nome": {"type": "string", "description": "Nome completo do cliente (obrigatório)"},
+                    "servico_nome": {"type": "string", "description": "Nome exato do serviço (ex: Corte Feminino)"},
+                    "profissional_nome": {"type": "string", "description": "Nome do profissional"},
+                    "data_hora": {"type": "string", "description": "Data e hora no formato YYYY-MM-DD HH:MM"},
+                    "cliente_trinks_id": {"type": "integer", "description": "ID do cliente no Trinks (após seleção múltipla)"},
                 },
                 "required": ["cliente_nome", "servico_nome", "profissional_nome", "data_hora"]
             }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "listar_agendamentos_cliente",
+            "description": (
+                "Lista os agendamentos futuros do cliente no Trinks. "
+                "Use quando o cliente perguntar sobre seus agendamentos ou quiser cancelar um."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cliente_nome": {"type": "string", "description": "Nome do cliente para buscar no Trinks"},
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancelar_agendamento",
+            "description": (
+                "Cancela um agendamento existente no Trinks pelo ID. "
+                "Use SOMENTE após o cliente confirmar que quer cancelar e informar ou selecionar o agendamento."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agendamento_id": {"type": "integer", "description": "ID do agendamento a cancelar"},
+                    "motivo": {"type": "string", "description": "Motivo do cancelamento (opcional)"},
+                },
+                "required": ["agendamento_id"]
+            }
+        }
+    },
 ]
 
 
@@ -134,7 +129,7 @@ class AICoreMariana:
         self.marina_name = MARINA_NAME
         self.salao_name = MARINA_SALAO
 
-    # ── Transcrição de áudio ──────────────────────────────────
+    # ── Transcrição de áudio ──────────────────────────────
 
     def transcrever_audio(self, audio_bytes: bytes, mimetype: str = "audio/ogg") -> str:
         """Transcreve áudio WhatsApp para texto usando OpenAI Whisper."""
@@ -174,7 +169,7 @@ class AICoreMariana:
                 pass
             return ""
 
-    # ── Cache Trinks ──────────────────────────────────────────
+    # ── Cache Trinks ─────────────────────────────────────────
 
     def atualizar_contexto_trinks(self, db):
         global _servicos_cache, _profissionais_cache
@@ -207,7 +202,7 @@ class AICoreMariana:
             return ", ".join(_profissionais_cache)
         return "a equipe do salão"
 
-    # ── OpenAI ────────────────────────────────────────────────
+    # ── OpenAI ──────────────────────────────────────────
 
     def _chamar_gpt(self, system_prompt, user_message):
         global _client
@@ -241,7 +236,6 @@ class AICoreMariana:
         if not _client:
             _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
-        # Quando é confirmação de agendamento, força GPT a chamar criar_agendamento
         tool_choice = {"type": "function", "function": {"name": "criar_agendamento"}} if forcar_tool else "auto"
 
         for attempt in range(3):
@@ -259,7 +253,6 @@ class AICoreMariana:
                 if not msg.tool_calls:
                     return msg.content
 
-                # Executa cada tool call
                 messages = list(messages) + [msg]
                 for tc in msg.tool_calls:
                     args = json.loads(tc.function.arguments)
@@ -270,7 +263,6 @@ class AICoreMariana:
                         "content": json.dumps(resultado, ensure_ascii=False),
                     })
 
-                # Resposta final após tools
                 final = _client.chat.completions.create(
                     model=OPENAI_MODEL,
                     messages=messages,
@@ -298,6 +290,10 @@ class AICoreMariana:
             return self._tool_disponibilidade(args)
         elif nome == "criar_agendamento":
             return self._tool_criar_agendamento(args, telefone, cliente_info)
+        elif nome == "listar_agendamentos_cliente":
+            return self._tool_listar_agendamentos_cliente(args, telefone, cliente_info)
+        elif nome == "cancelar_agendamento":
+            return self._tool_cancelar_agendamento(args, telefone)
         return {"erro": "Ferramenta desconhecida: {}".format(nome)}
 
     def _tool_salvar_dados_cliente(self, args, db, cliente_info):
@@ -331,7 +327,6 @@ class AICoreMariana:
                         if servico_nome.lower() in s["nome"].lower():
                             servico_id = s["id"]
                             break
-
                 if profissional_nome:
                     profissionais = trinks_api.listar_profissionais()
                     for p in profissionais:
@@ -360,10 +355,9 @@ class AICoreMariana:
     def _tool_criar_agendamento(self, args, telefone, cliente_info):
         from app.services.trinks_api import trinks_api
         from app.services.evolution_api import evolution_api_client
-        from config import TRINKS_ESTABELECIMENTO_ID, WHATSAPP_INSTANCE_NAME
+        from config import WHATSAPP_INSTANCE_NAME
 
         def _debug(msg):
-            """Envia mensagem de status no WhatsApp durante o fluxo (modo dev)."""
             logger.info("[DEBUG-AGENDAMENTO] %s", msg)
             try:
                 evolution_api_client.enviar_mensagem(
@@ -397,7 +391,6 @@ class AICoreMariana:
         servico_id = None
         duracao_minutos = 60
         valor_servico = 0.0
-        servico_raw = {}
         try:
             servicos = trinks_api.listar_servicos()
             for s in servicos:
@@ -406,7 +399,6 @@ class AICoreMariana:
                     servico_nome = s["nome"]
                     duracao_minutos = int(s.get("duracao_minutos") or 60)
                     valor_servico = float(s.get("preco") or 0)
-                    servico_raw = s.get("_raw", {})
                     break
         except Exception as e:
             logger.error("Erro buscando serviço: %s", str(e))
@@ -418,7 +410,7 @@ class AICoreMariana:
         _debug("✅ Serviço: {} | id={} | duração={}min | valor=R${:.0f}".format(
             servico_nome, servico_id, duracao_minutos, valor_servico))
 
-        # 3. Busca profissional — checa apelido e nome completo
+        # 3. Busca profissional
         profissional_id = None
         try:
             profissionais = trinks_api.listar_profissionais()
@@ -439,42 +431,29 @@ class AICoreMariana:
 
         if not profissional_id:
             try:
-                profissionais = profissionais if 'profissionais' in dir() else trinks_api.listar_profissionais()
+                lista_profs = trinks_api.listar_profissionais()
             except Exception:
-                profissionais = []
-            lista = "\n".join("{}️⃣ {}".format(i+1, p["nome_completo"] or p["nome"])
-                              for i, p in enumerate(profissionais))
+                lista_profs = []
+            lista = "\n".join("{}⃣ {}".format(i+1, p["nome_completo"] or p["nome"])
+                              for i, p in enumerate(lista_profs))
             _debug("⚠️ Profissional '{}' não encontrado".format(profissional_nome))
-            return {
-                "erro": "Profissional não encontrado. Qual profissional você prefere?\n\n{}".format(lista),
-            }
+            return {"erro": "Profissional não encontrado. Qual profissional você prefere?\n\n{}".format(lista)}
 
         # 4. Verifica conflito de horário
         data_apenas = dt.strftime("%Y-%m-%d")
         hora_desejada = dt.strftime("%H:%M")
         try:
             agendamentos_dia = trinks_api.listar_agendamentos(data_inicio=data_apenas, data_fim=data_apenas)
-            conflitos = []
-            for ag in agendamentos_dia:
-                if profissional_id and ag.get("profissional_id") != profissional_id:
-                    continue
-                ag_hora = ag.get("data_hora", "")
-                if ag_hora and hora_desejada in ag_hora:
-                    conflitos.append(ag)
-
+            conflitos = [ag for ag in agendamentos_dia
+                         if ag.get("profissional_id") == profissional_id
+                         and hora_desejada in ag.get("data_hora", "")]
             if conflitos:
-                c = conflitos[0]
-                _debug("⚠️ Conflito: {} já tem agendamento às {} com {} (id={})".format(
-                    profissional_nome or "profissional", hora_desejada,
-                    c.get("cliente", "?"), c.get("id", "?")))
-                return {
-                    "erro": "Já existe um agendamento às {} para {}. Escolha outro horário.".format(
-                        hora_desejada, profissional_nome or "esse profissional")
-                }
-            _debug("✅ Horário {} livre em {}".format(hora_desejada, data_apenas))
+                _debug("⚠️ Conflito às {} para {}".format(hora_desejada, profissional_nome))
+                return {"erro": "Já existe um agendamento às {} para {}. Escolha outro horário.".format(
+                    hora_desejada, profissional_nome)}
+            _debug("✅ Horário {} livre".format(hora_desejada))
         except Exception as e:
             logger.warning("Erro ao verificar conflitos: %s", str(e))
-            _debug("⚠️ Não foi possível verificar conflitos — prosseguindo")
 
         # 5. Busca ou cria cliente no Trinks
         nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
@@ -482,7 +461,7 @@ class AICoreMariana:
             return {"erro": "Preciso do nome completo do cliente para criar o agendamento."}
 
         tel_cliente = telefone or ""
-        cliente_id = args.get("cliente_trinks_id")  # já definido se veio de seleção múltipla
+        cliente_id = args.get("cliente_trinks_id")
 
         if not cliente_id:
             try:
@@ -497,16 +476,13 @@ class AICoreMariana:
                     cliente_id = novo.get("id") if novo else None
                 except Exception as e:
                     logger.warning("Erro ao criar cliente: %s", str(e))
-
                 if not cliente_id:
-                    _debug("❌ Não foi possível registrar cliente '{}' no Trinks".format(nome_cliente))
+                    _debug("❌ Não foi possível registrar cliente '{}'".format(nome_cliente))
                     return {"erro": "Não foi possível registrar o cliente no sistema."}
-                _debug("✅ Cliente novo criado: {} | id={}".format(nome_cliente, cliente_id))
-
+                _debug("✅ Cliente novo: {} | id={}".format(nome_cliente, cliente_id))
             elif len(candidatos) == 1:
                 cliente_id = candidatos[0].get("id")
                 _debug("✅ Cliente: {} | id={}".format(candidatos[0].get("nome"), cliente_id))
-
             else:
                 linhas = ["Encontrei {} cadastros 🔍 Qual é o seu?\n".format(len(candidatos))]
                 for i, c in enumerate(candidatos, 1):
@@ -515,13 +491,10 @@ class AICoreMariana:
                     if fones:
                         t = fones[0]
                         tel_fmt = " – ({}) {}-{}".format(
-                            t.get("ddd", ""),
-                            t.get("telefone", "")[:5],
-                            t.get("telefone", "")[5:]
-                        )
-                    linhas.append("{}️⃣ {}{}".format(i, c.get("nome", "?"), tel_fmt))
+                            t.get("ddd", ""), t.get("telefone", "")[:5], t.get("telefone", "")[5:])
+                    linhas.append("{}⃣ {}{}".format(i, c.get("nome", "?"), tel_fmt))
                 linhas.append("\nResponda com o número correspondente.")
-                _debug("🔍 {} candidatos encontrados — aguardando seleção".format(len(candidatos)))
+                _debug("🔍 {} candidatos — aguardando seleção".format(len(candidatos)))
                 return {
                     "aguardando_selecao": True,
                     "candidatos": [{"indice": i+1, "id": c.get("id"), "nome": c.get("nome")}
@@ -529,7 +502,7 @@ class AICoreMariana:
                     "mensagem_usuario": "\n".join(linhas),
                 }
 
-        # 6. Cria agendamento
+        # 6. Cria agendamento com payload correto da API Trinks
         payload = {
             "servicoId": servico_id,
             "clienteId": cliente_id,
@@ -542,28 +515,111 @@ class AICoreMariana:
         }
 
         logger.info("Criando agendamento Trinks: %s", payload)
-        _debug("📤 Enviando: servicoId={} | clienteId={} | profId={} | dataHoraInicio={} | duracao={}min | valor=R${:.0f}".format(
+        _debug("📤 servicoId={} | clienteId={} | profId={} | dataHoraInicio={} | {}min | R${:.0f}".format(
             servico_id, cliente_id, profissional_id, data_hora_iso, duracao_minutos, valor_servico))
 
         resultado = trinks_api.criar_agendamento(payload)
 
-        if resultado:
-            ag_id = resultado.get("id", "")
+        if resultado and resultado.get("id"):
+            ag_id = resultado["id"]
             _debug("✅ Agendamento criado! id={}".format(ag_id))
             return {
                 "sucesso": True,
                 "agendamento_id": ag_id,
                 "servico": servico_nome,
-                "profissional": profissional_nome or "a definir pelo salão",
+                "profissional": profissional_nome,
                 "data_hora": data_hora,
                 "cliente": nome_cliente,
-                "mensagem": "Agendamento criado com sucesso no sistema!",
+                "mensagem": "Agendamento criado com sucesso! ID: {}".format(ag_id),
             }
 
-        _debug("❌ Falha ao criar agendamento — veja os logs do servidor")
+        _debug("❌ Falha ao criar agendamento — API não retornou ID")
         return {"erro": "Falha ao criar agendamento no Trinks. Tente novamente ou ligue para o salão."}
 
-    # ── Prompt ────────────────────────────────────────────────
+    def _tool_listar_agendamentos_cliente(self, args, telefone, cliente_info):
+        from app.services.trinks_api import trinks_api
+        from datetime import timedelta
+
+        nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
+        tel_cliente = telefone or ""
+
+        cliente_id = None
+        try:
+            candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+            if candidatos:
+                cliente_id = candidatos[0].get("id")
+        except Exception as e:
+            logger.warning("Erro ao buscar cliente para listar agendamentos: %s", str(e))
+
+        hoje = datetime.now().strftime("%Y-%m-%d")
+        em_60_dias = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+        try:
+            todos = trinks_api.listar_agendamentos(data_inicio=hoje, data_fim=em_60_dias)
+        except Exception as e:
+            logger.error("Erro ao listar agendamentos: %s", str(e))
+            return {"erro": "Não foi possível buscar seus agendamentos."}
+
+        if cliente_id:
+            agendamentos = [ag for ag in todos if ag.get("cliente_id") == cliente_id]
+        else:
+            agendamentos = todos[:10]
+
+        if not agendamentos:
+            return {"agendamentos": [], "mensagem": "Nenhum agendamento futuro encontrado."}
+
+        itens = []
+        for ag in agendamentos[:5]:
+            data_hora_raw = ag.get("data_hora", "")
+            try:
+                dt = datetime.fromisoformat(data_hora_raw.replace("Z", "+00:00"))
+                data_fmt = dt.strftime("%d/%m/%Y às %H:%M")
+            except Exception:
+                data_fmt = data_hora_raw
+            itens.append({
+                "id": ag.get("id"),
+                "servico": ag.get("servico", ""),
+                "profissional": ag.get("profissional", ""),
+                "data_hora": data_fmt,
+                "status": ag.get("status", ""),
+            })
+
+        return {"agendamentos": itens, "total": len(itens)}
+
+    def _tool_cancelar_agendamento(self, args, telefone):
+        from app.services.trinks_api import trinks_api
+        from app.services.evolution_api import evolution_api_client
+        from config import WHATSAPP_INSTANCE_NAME
+
+        def _debug(msg):
+            logger.info("[DEBUG-CANCELAMENTO] %s", msg)
+            try:
+                evolution_api_client.enviar_mensagem(
+                    instance=WHATSAPP_INSTANCE_NAME,
+                    numero=telefone,
+                    mensagem="🔧 *[DEV]* " + msg,
+                )
+            except Exception:
+                pass
+
+        agendamento_id = args.get("agendamento_id")
+        if not agendamento_id:
+            return {"erro": "ID do agendamento é obrigatório para cancelar."}
+
+        _debug("📤 Cancelando agendamento id={}".format(agendamento_id))
+        resultado = trinks_api.cancelar_agendamento(agendamento_id)
+
+        if resultado is True:
+            _debug("✅ Agendamento {} cancelado!".format(agendamento_id))
+            return {
+                "sucesso": True,
+                "agendamento_id": agendamento_id,
+                "mensagem": "Agendamento ID {} cancelado com sucesso!".format(agendamento_id),
+            }
+
+        _debug("❌ Falha ao cancelar agendamento id={}".format(agendamento_id))
+        return {"erro": "Não foi possível cancelar o agendamento. Tente novamente ou ligue para o salão."}
+
+    # ── Prompt ──────────────────────────────────────────
 
     def _construir_system_prompt(self, cliente_info):
         nome_cliente = cliente_info.get("nome", "Cliente")
@@ -575,9 +631,6 @@ class AICoreMariana:
         historico_str = ", ".join(historico_servicos[-5:]) if historico_servicos else "nenhum"
         profissional_pref = preferencias.get("profissional_preferido", "qualquer")
         horario_pref = preferencias.get("horario_preferido", "qualquer")
-
-        historico_text = ""
-
         sexo = cliente_info.get("sexo", "")
         sexo_str = {"M": "Masculino", "F": "Feminino"}.get(sexo, "Não informado")
         data_hoje = datetime.now().strftime("%d/%m/%Y")
@@ -617,19 +670,19 @@ class AICoreMariana:
             "2. Seja breve (máximo 3 linhas por mensagem)\n"
             "3. Use 1-2 emojis\n"
             "4. Sempre use o nome do cliente quando conhecido\n"
-            "5. Sexo: se desconhecido e o serviço for corte de cabelo, pergunte 'masculino ou feminino?' e salve com salvar_dados_cliente\n"
-            "6. Para agendar: (1) pergunte serviço, profissional preferido e data, "
-            "(2) use verificar_disponibilidade para mostrar horários reais, "
-            "(3) confirme todos os dados com o cliente, "
-            "(4) use criar_agendamento — profissional_nome é OBRIGATÓRIO\n"
-            "7. Se profissional não for especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
-            "8. Após criar agendamento com sucesso, confirme os detalhes para o cliente\n"
-            "9. CRÍTICO: quando o cliente confirmar o agendamento (disser 'sim', 'pode ser', 'confirmo', 'ok', 'isso', etc.), "
-            "você DEVE chamar criar_agendamento IMEDIATAMENTE. NUNCA diga que agendou sem ter chamado a função. "
-            "Se não chamar a função, o agendamento NÃO existe no sistema. "
-            "Use os dados do histórico da conversa para preencher os parâmetros da função.\n"
-            "10. NUNCA confirme um agendamento textualmente sem antes ter chamado criar_agendamento e recebido sucesso=True"
-            "{historico_text}"
+            "5. Sexo: se desconhecido e serviço for corte, pergunte 'masculino ou feminino?' e salve\n"
+            "6. Para agendar: (1) pergunte serviço, profissional e data, "
+            "(2) use verificar_disponibilidade, (3) confirme os dados, (4) chame criar_agendamento\n"
+            "7. Se profissional não especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
+            "8. CONFIRMAÇÃO OBRIGATÓRIA: após criar_agendamento, SEMPRE informe o ID retornado pela API. "
+            "Exemplo: 'Agendado com sucesso! ✅ ID: 123456 | Serviço: X | Profissional: Y | Data: Z'. "
+            "SEM ID DA API = NÃO CONFIRME O AGENDAMENTO. Se não receber ID, informe que houve falha.\n"
+            "9. CRÍTICO: quando o cliente confirmar (disser sim/ok/pode/confirmo), chame criar_agendamento "
+            "IMEDIATAMENTE usando os dados do histórico. NUNCA diga que agendou sem ter chamado a função.\n"
+            "10. Para cancelar: use listar_agendamentos_cliente para mostrar os agendamentos, "
+            "confirme qual o cliente quer cancelar, depois chame cancelar_agendamento com o ID. "
+            "Após cancelar, confirme com o ID do agendamento cancelado.\n"
+            "11. NUNCA invente IDs ou confirme operações sem retorno sucesso=True da função."
         ).format(
             nome=self.marina_name,
             salao=self.salao_name,
@@ -642,11 +695,10 @@ class AICoreMariana:
             saudacao_instrucao=saudacao_instrucao,
             servicos=self._servicos_para_texto(),
             profissionais=self._profissionais_para_texto(),
-            historico_text=historico_text,
             profissionais_lista=self._profissionais_para_texto(),
         )
 
-    # ── Fallback sem IA ───────────────────────────────────────
+    # ── Fallback sem IA ────────────────────────────────────────
 
     def _resposta_fallback(self, mensagem, cliente_info):
         nome = cliente_info.get("nome", "")
@@ -674,7 +726,7 @@ class AICoreMariana:
 
         return "{}Sou a Marina, do {} 😊 Posso ajudar com serviços, preços e agendamentos. O que você precisa?".format(saudacao, self.salao_name)
 
-    # ── Interface pública ─────────────────────────────────────
+    # ── Interface pública ───────────────────────────────────────
 
     def _e_confirmacao(self, mensagem, historico_conversas):
         """Detecta se a mensagem é uma confirmação de agendamento pendente."""
@@ -682,7 +734,6 @@ class AICoreMariana:
         m = mensagem.strip().lower()
         if not any(p in m for p in palavras_confirmacao):
             return False
-        # Verifica se a última resposta da Marina sugeria confirmação
         if historico_conversas:
             ultima = historico_conversas[-1].get("resposta_marina", "").lower()
             indicadores = ["confirma", "posso agendar", "reservar", "quer confirmar", "confirmo", "agendo"]
@@ -695,7 +746,6 @@ class AICoreMariana:
             system_prompt = self._construir_system_prompt(cliente_info)
             messages = [{"role": "system", "content": system_prompt}]
 
-            # Passa histórico como turns reais do OpenAI para GPT ter contexto ao confirmar agendamento
             if historico_conversas:
                 for conv in historico_conversas[-5:]:
                     user_msg = conv.get("mensagem_usuario", "")
@@ -707,7 +757,6 @@ class AICoreMariana:
 
             messages.append({"role": "user", "content": mensagem})
 
-            # Força tool_choice=required quando é confirmação de agendamento
             confirmacao = self._e_confirmacao(mensagem, historico_conversas)
             resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info,
                                                    forcar_tool=confirmacao)
@@ -725,12 +774,12 @@ class AICoreMariana:
         m = mensagem.lower()
         if any(p in m for p in ["agendar", "marcar", "horário", "hora", "disponível", "vaga"]):
             return "agendamento"
+        elif any(p in m for p in ["cancelar", "desmarcar", "remarcar"]):
+            return "cancelamento"
         elif any(p in m for p in ["preço", "valor", "custa", "quanto"]):
             return "consulta_preco"
         elif any(p in m for p in ["serviço", "serviços", "fazem", "oferecem"]):
             return "consulta_servicos"
-        elif any(p in m for p in ["cancelar", "desmarcar", "remarcar"]):
-            return "cancelamento"
         elif any(p in m for p in ["oi", "olá", "opa", "bom dia", "boa tarde", "boa noite"]):
             return "saudacao"
         else:

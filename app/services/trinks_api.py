@@ -40,7 +40,7 @@ class TrinksAPIClient:
         self.session.headers.update(HEADERS)
         self.ultima_sincronizacao: Optional[datetime] = None
 
-    # ── HTTP helpers ────────────────────────────────────
+    # ── HTTP helpers ──────────────────
 
     def _get(self, endpoint: str, params: dict = None) -> Optional[Dict]:
         url = "{}/{}".format(self.base_url, endpoint.lstrip("/"))
@@ -105,13 +105,11 @@ class TrinksAPIClient:
             params["page"] += 1
         return todos
 
-    # ── Serviços ───────────────────────────────────────────────
+    # ── Serviços ───────────────────────────────────────
 
     def listar_servicos(self, apenas_visiveis: bool = False) -> List[Dict[str, Any]]:
-        """GET /v1/servicos — campos reais: nome, preco, duracaoEmMinutos, categoria, visivelParaCliente"""
+        """GET /v1/servicos"""
         itens = self._paginar("/v1/servicos")
-        if itens:
-            logger.debug("Trinks serviço RAW exemplo: %s", itens[0])
         servicos = []
         for item in itens:
             visivel = item.get("visivelParaCliente", True)
@@ -131,10 +129,10 @@ class TrinksAPIClient:
         logger.info("Trinks: %d serviços obtidos", len(servicos))
         return servicos
 
-    # ── Profissionais ─────────────────────────────────────────
+    # ── Profissionais ───────────────────────────────
 
     def listar_profissionais(self) -> List[Dict[str, Any]]:
-        """GET /v1/profissionais — campos reais: nome, apelido, id"""
+        """GET /v1/profissionais"""
         itens = self._paginar("/v1/profissionais")
         profissionais = []
         for item in itens:
@@ -149,21 +147,19 @@ class TrinksAPIClient:
         logger.info("Trinks: %d profissionais obtidos", len(profissionais))
         return profissionais
 
-    # ── Clientes ──────────────────────────────────────────────
+    # ── Clientes ──────────────────────────────────
 
     @staticmethod
     def _tel_para_trinks(telefone: str) -> str:
-        """Converte número WhatsApp (5511976820026) para formato Trinks (976820026).
-        Remove DDI (55) e DDD (2 dígitos)."""
         tel = "".join(filter(str.isdigit, telefone))
         if tel.startswith("55") and len(tel) >= 12:
-            tel = tel[2:]   # remove DDI 55
+            tel = tel[2:]
         if len(tel) in (10, 11):
-            tel = tel[2:]   # remove DDD
+            tel = tel[2:]
         return tel
 
     def listar_clientes(self, nome: str = None, telefone: str = None) -> List[Dict]:
-        """GET /v1/clientes — busca por nome e/ou telefone (sem DDI/DDD)"""
+        """GET /v1/clientes"""
         params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID, "incluirDetalhes": "false"}
         if nome:
             params["nome"] = nome
@@ -190,74 +186,51 @@ class TrinksAPIClient:
         return resultado
 
     def buscar_candidatos_cliente(self, nome: str, telefone: str) -> List[Dict]:
-        """Busca clientes combinando nome + telefone.
-        Estratégia: tenta do mais específico ao mais genérico."""
+        """Busca clientes combinando nome + telefone (mais específico ao mais genérico)."""
         tel_trinks = self._tel_para_trinks(telefone) if telefone else ""
         primeiro_nome = nome.strip().split()[0] if nome and nome != "Cliente" else ""
 
-        # 1. Mais específico: primeiro nome + telefone juntos
         if primeiro_nome and tel_trinks:
             resultado = self.listar_clientes(nome=primeiro_nome, telefone=tel_trinks)
             if resultado:
-                logger.info("Trinks: %d cliente(s) por nome+telefone", len(resultado))
                 return resultado
 
-        # 2. Só telefone
         if tel_trinks:
             resultado = self.listar_clientes(telefone=tel_trinks)
             if resultado:
-                logger.info("Trinks: %d cliente(s) só por telefone", len(resultado))
                 return resultado
 
-        # 3. Só nome completo
         if nome and nome != "Cliente":
             resultado = self.listar_clientes(nome=nome)
             if resultado:
-                logger.info("Trinks: %d cliente(s) só por nome", len(resultado))
                 return resultado
 
-        # 4. Só primeiro nome
         if primeiro_nome and primeiro_nome != nome:
             resultado = self.listar_clientes(nome=primeiro_nome)
             if resultado:
-                logger.info("Trinks: %d cliente(s) por primeiro nome", len(resultado))
                 return resultado
 
-        logger.info("Trinks: nenhum cliente encontrado para nome='%s' tel='%s'", nome, telefone)
         return []
 
     def buscar_ou_criar_cliente(self, nome: str, telefone: str) -> Optional[int]:
-        """Atalho simples: retorna id do primeiro candidato ou cria novo."""
         candidatos = self.buscar_candidatos_cliente(nome, telefone)
         if candidatos:
             return candidatos[0].get("id")
         resultado = self.criar_cliente(nome, telefone)
         if resultado:
             return resultado.get("id")
-        logger.warning("Trinks: não foi possível criar cliente %s", nome)
         return None
 
-    # ── Disponibilidade ─────────────────────────────────────────
+    # ── Disponibilidade ───────────────────────────────
 
-    def horarios_disponiveis(
-        self,
-        data: str,
-        servico_id: int = None,
-        profissional_id: int = None,
-    ) -> List[str]:
-        """Retorna lista de horários disponíveis (HH:MM) para uma data.
-        Tenta endpoint Trinks nativo; fallback: calcula a partir dos agendamentos do dia."""
+    def horarios_disponiveis(self, data: str, servico_id: int = None, profissional_id: int = None) -> List[str]:
         params = {"data": data}
         if servico_id:
             params["servicoId"] = servico_id
         if profissional_id:
             params["profissionalId"] = profissional_id
 
-        for endpoint in [
-            "/v1/horarios-disponiveis",
-            "/v1/disponibilidade",
-            "/v1/agenda/disponibilidade",
-        ]:
+        for endpoint in ["/v1/horarios-disponiveis", "/v1/disponibilidade", "/v1/agenda/disponibilidade"]:
             dados = self._get(endpoint, params=params)
             if dados is not None:
                 horarios = []
@@ -270,13 +243,11 @@ class TrinksAPIClient:
                         if hora:
                             horarios.append(hora[-5:] if len(hora) > 5 else hora)
                 if horarios:
-                    logger.info("Trinks disponibilidade via %s: %d slots", endpoint, len(horarios))
                     return horarios
 
         return self._calcular_horarios_livres(data, profissional_id)
 
     def _calcular_horarios_livres(self, data: str, profissional_id: int = None) -> List[str]:
-        """Fallback: calcula horários livres com base nos agendamentos existentes"""
         agendamentos = self.listar_agendamentos(data_inicio=data, data_fim=data)
         if profissional_id:
             agendamentos = [a for a in agendamentos if a.get("profissional_id") == profissional_id]
@@ -299,16 +270,11 @@ class TrinksAPIClient:
                 if slot not in ocupados:
                     slots.append(slot)
             hora += 1
-        logger.info("Trinks disponibilidade (fallback): %d slots para %s", len(slots), data)
         return slots[:12]
 
-    # ── Agendamentos ────────────────────────────────────────────
+    # ── Agendamentos ────────────────────────────────
 
-    def listar_agendamentos(
-        self,
-        data_inicio: str = None,
-        data_fim: str = None,
-    ) -> List[Dict[str, Any]]:
+    def listar_agendamentos(self, data_inicio: str = None, data_fim: str = None) -> List[Dict[str, Any]]:
         """GET /v1/agendamentos"""
         params = {}
         if data_inicio:
@@ -344,7 +310,22 @@ class TrinksAPIClient:
             logger.info("Trinks: agendamento criado id=%s", resultado.get("id"))
         return resultado
 
-    # ── Sincronização com banco local ─────────────────────────
+    def cancelar_agendamento(self, agendamento_id: int) -> bool:
+        """DELETE /v1/agendamentos/{id}"""
+        url = "{}/v1/agendamentos/{}".format(self.base_url, agendamento_id)
+        try:
+            resp = self.session.delete(url, timeout=30)
+            if resp.ok:
+                logger.info("Trinks: agendamento %s cancelado", agendamento_id)
+                return True
+            logger.error("Trinks: falha ao cancelar agendamento %s: %s %s",
+                         agendamento_id, resp.status_code, resp.text[:500])
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error("Trinks: erro ao cancelar agendamento %s: %s", agendamento_id, str(e))
+            return False
+
+    # ── Sincronizaç── com banco local ────────────────────
 
     def sincronizar_dados(self, db: Session) -> bool:
         """Sincroniza serviços e profissionais do Trinks para o banco local"""
@@ -407,7 +388,7 @@ class TrinksAPIClient:
             logger.error("Erro no sync Trinks: %s", str(e))
             return False
 
-    # ── Diagnóstico ─────────────────────────────────────────────
+    # ── Diagnóstico ────────────────────────────────────
 
     def testar_conexao(self) -> Dict[str, Any]:
         dados = self._get("/v1/servicos", params={"pageSize": 1})
