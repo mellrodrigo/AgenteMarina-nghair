@@ -235,11 +235,14 @@ class AICoreMariana:
                     time.sleep(2 ** attempt)
         return None
 
-    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info):
+    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info, forcar_tool=False):
         """Chama GPT com function calling; executa tools e retorna resposta final."""
         global _client
         if not _client:
             _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
+        # Quando é confirmação de agendamento, força GPT a chamar criar_agendamento
+        tool_choice = {"type": "function", "function": {"name": "criar_agendamento"}} if forcar_tool else "auto"
 
         for attempt in range(3):
             try:
@@ -247,7 +250,7 @@ class AICoreMariana:
                     model=OPENAI_MODEL,
                     messages=messages,
                     tools=TOOLS,
-                    tool_choice="auto",
+                    tool_choice=tool_choice,
                     temperature=0.7,
                     max_tokens=512,
                 )
@@ -627,7 +630,12 @@ class AICoreMariana:
             "(3) confirme todos os dados com o cliente, "
             "(4) use criar_agendamento — profissional_nome é OBRIGATÓRIO\n"
             "7. Se profissional não for especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
-            "8. Após criar agendamento com sucesso, confirme os detalhes para o cliente"
+            "8. Após criar agendamento com sucesso, confirme os detalhes para o cliente\n"
+            "9. CRÍTICO: quando o cliente confirmar o agendamento (disser 'sim', 'pode ser', 'confirmo', 'ok', 'isso', etc.), "
+            "você DEVE chamar criar_agendamento IMEDIATAMENTE. NUNCA diga que agendou sem ter chamado a função. "
+            "Se não chamar a função, o agendamento NÃO existe no sistema. "
+            "Use os dados do histórico da conversa para preencher os parâmetros da função.\n"
+            "10. NUNCA confirme um agendamento textualmente sem antes ter chamado criar_agendamento e recebido sucesso=True"
             "{historico_text}"
         ).format(
             nome=self.marina_name,
@@ -675,6 +683,19 @@ class AICoreMariana:
 
     # ── Interface pública ─────────────────────────────────────
 
+    def _e_confirmacao(self, mensagem, historico_conversas):
+        """Detecta se a mensagem é uma confirmação de agendamento pendente."""
+        palavras_confirmacao = ["sim", "pode", "ok", "isso", "confirmo", "confirma", "quero", "tá", "ta", "bom", "certo"]
+        m = mensagem.strip().lower()
+        if not any(p in m for p in palavras_confirmacao):
+            return False
+        # Verifica se a última resposta da Marina sugeria confirmação
+        if historico_conversas:
+            ultima = historico_conversas[-1].get("resposta_marina", "").lower()
+            indicadores = ["confirma", "posso agendar", "reservar", "quer confirmar", "confirmo", "agendo"]
+            return any(ind in ultima for ind in indicadores)
+        return False
+
     def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,
                                  db=None, telefone=None):
         try:
@@ -693,7 +714,10 @@ class AICoreMariana:
 
             messages.append({"role": "user", "content": mensagem})
 
-            resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info)
+            # Força tool_choice=required quando é confirmação de agendamento
+            confirmacao = self._e_confirmacao(mensagem, historico_conversas)
+            resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info,
+                                                   forcar_tool=confirmacao)
 
             if not resposta:
                 resposta = self._resposta_fallback(mensagem, cliente_info)
