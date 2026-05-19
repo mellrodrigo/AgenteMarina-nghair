@@ -569,7 +569,7 @@ class AICoreMariana:
 
     # ── Prompt ────────────────────────────────────────────────
 
-    def _construir_system_prompt(self, cliente_info, historico_conversas=None):
+    def _construir_system_prompt(self, cliente_info):
         nome_cliente = cliente_info.get("nome", "Cliente")
         nome_conhecido = cliente_info.get("nome_conhecido", False)
         is_primeira_vez = cliente_info.get("is_primeira_vez", False)
@@ -581,13 +581,6 @@ class AICoreMariana:
         horario_pref = preferencias.get("horario_preferido", "qualquer")
 
         historico_text = ""
-        if historico_conversas:
-            historico_text = "\nHistórico recente:\n"
-            for conv in historico_conversas[-3:]:
-                historico_text += "Cliente: {}\nMarina: {}\n".format(
-                    conv.get("mensagem_usuario", ""),
-                    conv.get("resposta_marina", "")
-                )
 
         sexo = cliente_info.get("sexo", "")
         sexo_str = {"M": "Masculino", "F": "Feminino"}.get(sexo, "Não informado")
@@ -685,11 +678,20 @@ class AICoreMariana:
     def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,
                                  db=None, telefone=None):
         try:
-            system_prompt = self._construir_system_prompt(cliente_info, historico_conversas)
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": mensagem},
-            ]
+            system_prompt = self._construir_system_prompt(cliente_info)
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # Passa histórico como turns reais do OpenAI para GPT ter contexto ao confirmar agendamento
+            if historico_conversas:
+                for conv in historico_conversas[-5:]:
+                    user_msg = conv.get("mensagem_usuario", "")
+                    assistant_msg = conv.get("resposta_marina", "")
+                    if user_msg:
+                        messages.append({"role": "user", "content": user_msg})
+                    if assistant_msg:
+                        messages.append({"role": "assistant", "content": assistant_msg})
+
+            messages.append({"role": "user", "content": mensagem})
 
             resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info)
 
