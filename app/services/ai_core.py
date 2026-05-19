@@ -744,6 +744,19 @@ class AICoreMariana:
             return any(ind in ultima for ind in indicadores)
         return False
 
+    def _extrair_ids_agendamento(self, historico_conversas):
+        """Extrai IDs de agendamentos mencionados nas respostas da Marina no histórico."""
+        import re
+        ids = []
+        if not historico_conversas:
+            return ids
+        for conv in historico_conversas:
+            resposta = conv.get("resposta_marina", "")
+            matches = re.findall(r'\bID[:\s]+(\d{6,})', resposta, re.IGNORECASE)
+            ids.extend([int(m) for m in matches])
+        seen = set()
+        return [x for x in ids if not (x in seen or seen.add(x))]
+
     def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,
                                  db=None, telefone=None):
         try:
@@ -758,6 +771,15 @@ class AICoreMariana:
                         messages.append({"role": "user", "content": user_msg})
                     if assistant_msg:
                         messages.append({"role": "assistant", "content": assistant_msg})
+
+            ids_agendamento = self._extrair_ids_agendamento(historico_conversas)
+            if ids_agendamento:
+                ids_str = ", ".join(str(i) for i in ids_agendamento)
+                messages.append({
+                    "role": "system",
+                    "content": "[SISTEMA] IDs de agendamentos registrados nesta conversa: {}. "
+                               "Use estes IDs ao cancelar — NÃO invente outros.".format(ids_str),
+                })
 
             messages.append({"role": "user", "content": mensagem})
 
