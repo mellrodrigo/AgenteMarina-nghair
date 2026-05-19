@@ -107,13 +107,14 @@ TOOLS = [
         "function": {
             "name": "cancelar_agendamento",
             "description": (
-                "Cancela um agendamento existente no Trinks pelo ID. "
-                "Use SOMENTE após o cliente confirmar que quer cancelar e informar ou selecionar o agendamento."
+                "Cancela um agendamento existente no Trinks pelo ID real do agendamento. "
+                "Use SOMENTE após o cliente confirmar. "
+                "IMPORTANTE: agendamento_id é o campo 'id' retornado por listar_agendamentos_cliente — NUNCA use o número de ordem da lista (1, 2, 3)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "agendamento_id": {"type": "integer", "description": "ID do agendamento a cancelar"},
+                    "agendamento_id": {"type": "integer", "description": "ID real do agendamento no Trinks (campo 'id', ex: 496402642) — NÃO é o índice da lista"},
                     "motivo": {"type": "string", "description": "Motivo do cancelamento (opcional)"},
                 },
                 "required": ["agendamento_id"]
@@ -679,11 +680,12 @@ class AICoreMariana:
             "9. CRÍTICO: quando o cliente confirmar (disser sim/ok/pode/confirmo), chame criar_agendamento "
             "IMEDIATAMENTE usando os dados do histórico. NUNCA diga que agendou sem ter chamado a função.\n"
             "10. CANCELAMENTO — fluxo obrigatório:\n"
-            "   a) PRIMEIRO verifique o histórico desta conversa: se já mencionamos um ID de agendamento, use-o diretamente.\n"
-            "   b) Se NÃO houver ID no histórico, chame listar_agendamentos_cliente para listar os agendamentos futuros do cliente.\n"
-            "   c) Apresente a lista numerada e peça para o cliente escolher qual quer cancelar.\n"
-            "   d) Após a confirmação do cliente, chame cancelar_agendamento com o ID escolhido.\n"
-            "   e) Confirme o cancelamento informando o ID do agendamento cancelado.\n"
+            "   a) PRIMEIRO verifique o histórico desta conversa: se já mencionamos um ID de agendamento do Trinks, use-o diretamente em cancelar_agendamento.\n"
+            "   b) Se NÃO houver ID no histórico, chame listar_agendamentos_cliente.\n"
+            "   c) Apresente a lista numerada assim: '1️⃣ Corte | Nilian | 20/05 às 14h (ID: 496402642)'\n"
+            "   d) Peça para o cliente escolher pelo número (1, 2, 3...).\n"
+            "   e) CRÍTICO: o campo agendamento_id em cancelar_agendamento deve ser o 'id' do agendamento retornado pela função listar_agendamentos_cliente — NUNCA use o número da lista (1, 2, 3) como ID.\n"
+            "   f) Após cancelar, confirme: 'Agendamento ID 496402642 cancelado com sucesso! ✅'\n"
             "11. NUNCA invente IDs ou confirme operações sem retorno sucesso=True da função."
         ).format(
             nome=self.marina_name,
