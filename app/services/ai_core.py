@@ -232,52 +232,58 @@ class AICoreMariana:
         return None
 
     def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info):
-        """Chama GPT com function calling; executa tools e retorna resposta final."""
+        """Chama GPT com function calling; executa tools em loop até resposta final."""
         global _client
         if not _client:
             _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
-        for attempt in range(3):
-            try:
-                response = _client.chat.completions.create(
-                    model=OPENAI_MODEL,
-                    messages=messages,
-                    tools=TOOLS,
-                    tool_choice="auto",
-                    temperature=0.7,
-                    max_tokens=512,
-                )
-                msg = response.choices[0].message
+        messages = list(messages)
+        max_rodadas = 6  # evita loop infinito
 
-                if not msg.tool_calls:
-                    return msg.content
+        for rodada in range(max_rodadas):
+            for attempt in range(3):
+                try:
+                    response = _client.chat.completions.create(
+                        model=OPENAI_MODEL,
+                        messages=messages,
+                        tools=TOOLS,
+                        tool_choice="auto",
+                        temperature=0.7,
+                        max_tokens=512,
+                    )
+                    break
+                except RateLimitError:
+                    wait = 2 ** attempt
+                    logger.warning("OpenAI 429, aguardando %ds...", wait)
+                    time.sleep(wait)
+                except Exception as e:
+                    logger.error("Erro OpenAI tools: %s", str(e))
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+                    else:
+                        return None
+            else:
+                return None
 
-                messages = list(messages) + [msg]
-                for tc in msg.tool_calls:
+            msg = response.choices[0].message
+
+            if not msg.tool_calls:
+                return msg.content
+
+            messages.append(msg)
+            for tc in msg.tool_calls:
+                try:
                     args = json.loads(tc.function.arguments)
-                    resultado = self._executar_tool(tc.function.name, args, db, telefone, cliente_info)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(resultado, ensure_ascii=False),
-                    })
+                except Exception:
+                    args = {}
+                resultado = self._executar_tool(tc.function.name, args, db, telefone, cliente_info)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(resultado, ensure_ascii=False),
+                })
 
-                final = _client.chat.completions.create(
-                    model=OPENAI_MODEL,
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=512,
-                )
-                return final.choices[0].message.content
-
-            except RateLimitError:
-                wait = 2 ** attempt
-                logger.warning("OpenAI 429, aguardando %ds...", wait)
-                time.sleep(wait)
-            except Exception as e:
-                logger.error("Erro OpenAI tools: %s", str(e))
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
+        logger.warning("_chamar_gpt_com_tools: máximo de rodadas atingido")
         return None
 
     # ── Execução das tools ────────────────────────────────────
@@ -672,7 +678,9 @@ class AICoreMariana:
             "4. Sempre use o nome do cliente quando conhecido\n"
             "5. Sexo: se desconhecido e serviço for corte, pergunte 'masculino ou feminino?' e salve\n"
             "6. Para agendar: (1) pergunte serviço, profissional e data, "
-            "(2) use verificar_disponibilidade, (3) confirme os dados, (4) chame criar_agendamento\n"
+            "(2) use verificar_disponibilidade, (3) confirme os dados, (4) chame criar_agendamento. "
+            "Se o cliente quiser MÚLTIPLOS serviços (ex: cabelo + manicure), chame criar_agendamento "
+            "uma vez para cada serviço — cada um pode ter profissional diferente.\n"
             "7. Se profissional não especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
             "8. CONFIRMAÇÃO OBRIGATÓRIA: após criar_agendamento, SEMPRE informe o ID retornado pela API. "
             "Exemplo: 'Agendado com sucesso! ✅ ID: 123456 | Serviço: X | Profissional: Y | Data: Z'. "
