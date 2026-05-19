@@ -49,8 +49,9 @@ TOOLS = [
         "function": {
             "name": "verificar_disponibilidade",
             "description": (
-                "Verifica horários disponíveis no Trinks para agendamento. "
-                "Use quando o cliente pedir horários ou quiser saber quando pode vir."
+                "Verifica horários disponíveis no Trinks. "
+                "Use SOMENTE quando o cliente NÃO souber o horário e pedir sugestões (ex: 'que horas tem?', 'qual horário disponível?'). "
+                "NÃO use quando o cliente já informou um horário específico — vá direto para criar_agendamento."
             ),
             "parameters": {
                 "type": "object",
@@ -677,8 +678,10 @@ class AICoreMariana:
             "3. Use 1-2 emojis\n"
             "4. Sempre use o nome do cliente quando conhecido\n"
             "5. Sexo: se desconhecido e serviço for corte, pergunte 'masculino ou feminino?' e salve\n"
-            "6. Para agendar: (1) pergunte serviço, profissional e data, "
-            "(2) use verificar_disponibilidade, (3) confirme os dados, (4) chame criar_agendamento. "
+            "6. Para agendar: (1) pergunte serviço, profissional e data/hora, "
+            "(2) quando tiver TODOS os dados, chame criar_agendamento diretamente — "
+            "NÃO chame verificar_disponibilidade se o cliente já informou o horário. "
+            "Use verificar_disponibilidade SOMENTE se o cliente pedir 'que horas tem?' ou não souber qual horário quer. "
             "Se o cliente quiser MÚLTIPLOS serviços (ex: cabelo + manicure), chame criar_agendamento "
             "uma vez para cada serviço — cada um pode ter profissional diferente.\n"
             "7. Se profissional não especificado, pergunte qual prefere. Profissionais: {profissionais_lista}\n"
