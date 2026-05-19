@@ -500,7 +500,7 @@ class AICoreMariana:
             "dataHoraInicio": data_hora_iso,
             "duracaoEmMinutos": duracao_minutos,
             "valor": valor_servico,
-            "observacoes": "",
+            "observacoes": "Agendado por Marina AI",
             "confirmado": True,
         }
 
