@@ -445,22 +445,6 @@ class AICoreMariana:
             _debug("⚠️ Profissional '{}' não encontrado".format(profissional_nome))
             return {"erro": "Profissional não encontrado. Qual profissional você prefere?\n\n{}".format(lista)}
 
-        # 4. Verifica conflito de horário
-        data_apenas = dt.strftime("%Y-%m-%d")
-        hora_desejada = dt.strftime("%H:%M")
-        try:
-            agendamentos_dia = trinks_api.listar_agendamentos(data_inicio=data_apenas, data_fim=data_apenas)
-            conflitos = [ag for ag in agendamentos_dia
-                         if ag.get("profissional_id") == profissional_id
-                         and hora_desejada in ag.get("data_hora", "")]
-            if conflitos:
-                _debug("⚠️ Conflito às {} para {}".format(hora_desejada, profissional_nome))
-                return {"erro": "Já existe um agendamento às {} para {}. Escolha outro horário.".format(
-                    hora_desejada, profissional_nome)}
-            _debug("✅ Horário {} livre".format(hora_desejada))
-        except Exception as e:
-            logger.warning("Erro ao verificar conflitos: %s", str(e))
-
         # 5. Busca ou cria cliente no Trinks
         nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
         if not nome_cliente or nome_cliente.strip().lower() in ("cliente", ""):
