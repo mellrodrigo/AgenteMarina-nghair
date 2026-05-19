@@ -13,6 +13,7 @@ Campos reais confirmados pela API (NGHair, estabelecimentoId=20181):
                observacoesDoCliente, observacoesDoEstabelecimento
 """
 import logging
+import time
 import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -43,25 +44,33 @@ class TrinksAPIClient:
 
     def _get(self, endpoint: str, params: dict = None) -> Optional[Dict]:
         url = "{}/{}".format(self.base_url, endpoint.lstrip("/"))
-        try:
-            resp = self.session.get(url, params=params, timeout=30)
-            if resp.status_code == 401:
-                logger.error("Trinks API 401: token inválido")
+        for attempt in range(4):
+            try:
+                resp = self.session.get(url, params=params, timeout=30)
+                if resp.status_code == 401:
+                    logger.error("Trinks API 401: token inválido")
+                    return None
+                if resp.status_code == 403:
+                    logger.error("Trinks API 403: acesso negado")
+                    return None
+                if resp.status_code == 404:
+                    logger.warning("Trinks endpoint não encontrado: %s", endpoint)
+                    return None
+                if resp.status_code == 429:
+                    wait = 2 ** attempt
+                    logger.warning("Trinks API 429 (rate limit), aguardando %ds... (tentativa %d/4)", wait, attempt + 1)
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.Timeout:
+                logger.error("Trinks API timeout: %s", url)
                 return None
-            if resp.status_code == 403:
-                logger.error("Trinks API 403: acesso negado")
+            except requests.exceptions.RequestException as e:
+                logger.error("Trinks API erro em %s: %s", url, str(e))
                 return None
-            if resp.status_code == 404:
-                logger.warning("Trinks endpoint não encontrado: %s", endpoint)
-                return None
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.Timeout:
-            logger.error("Trinks API timeout: %s", url)
-            return None
-        except requests.exceptions.RequestException as e:
-            logger.error("Trinks API erro em %s: %s", url, str(e))
-            return None
+        logger.error("Trinks API: máximo de tentativas atingido para %s", url)
+        return None
 
     def _post(self, endpoint: str, payload: dict) -> Optional[Dict]:
         url = "{}/{}".format(self.base_url, endpoint.lstrip("/"))
