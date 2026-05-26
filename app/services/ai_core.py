@@ -363,26 +363,43 @@ class AICoreMariana:
         cliente_id = None
         cliente_trinks = None
         try:
-            candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+            # Busca com detalhes para obter telefones
+            candidatos = trinks_api.listar_clientes(
+                nome=nome_cliente.split()[0] if nome_cliente else None,
+                telefone=trinks_api._tel_para_trinks(tel_cliente) if tel_cliente else None,
+                incluir_detalhes=True,
+            )
+            if not candidatos:
+                candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
             if candidatos:
                 cliente_id = candidatos[0].get("id")
                 cliente_info["_trinks_id"] = cliente_id
+                cliente_trinks = candidatos[0]
+                # Tenta buscar por ID para dados mais completos
                 try:
-                    cliente_trinks = trinks_api.buscar_cliente_por_id(cliente_id)
+                    por_id = trinks_api.buscar_cliente_por_id(cliente_id)
+                    if por_id:
+                        cliente_trinks = por_id
                 except Exception:
-                    cliente_trinks = candidatos[0]
+                    pass
         except Exception as e:
             logger.warning("Erro ao buscar cliente para validação: %s", str(e))
 
         if not cliente_trinks:
             return {"erro": "Não foi possível localizar o cadastro do cliente no Trinks."}
 
-        fones = cliente_trinks.get("telefones", [])
-        tel_fmt = ""
-        if fones:
+        def _fmt_tel(obj):
+            fones = obj.get("telefones", [])
+            if not fones:
+                return "não informado"
             t = fones[0]
-            tel_fmt = "({}) {}-{}".format(
-                t.get("ddd", ""), t.get("telefone", "")[:5], t.get("telefone", "")[5:])
+            ddd = t.get("ddd", "")
+            num = t.get("telefone", "") or t.get("numero", "")
+            if ddd and num:
+                return "({}) {}-{}".format(ddd, num[:5], num[5:])
+            return num or "não informado"
+
+        tel_fmt = _fmt_tel(cliente_trinks)
 
         return {
             "cliente_id": cliente_id,
@@ -390,14 +407,14 @@ class AICoreMariana:
             "email": cliente_trinks.get("email", "") or "não informado",
             "cpf": cliente_trinks.get("cpf", "") or "não informado",
             "genero": cliente_trinks.get("genero", "") or "não informado",
-            "telefone": tel_fmt or "não informado",
+            "telefone": tel_fmt,
             "mensagem": (
-                "Dados cadastrados no Trinks:\n"
+                "Seus dados cadastrados 📋:\n"
                 "• Nome: {}\n• Telefone: {}\n• E-mail: {}\n• CPF: {}\n• Gênero: {}\n\n"
-                "Algum dado está incorreto?"
+                "Deseja atualizar alguma informação?"
             ).format(
                 cliente_trinks.get("nome", ""),
-                tel_fmt or "não informado",
+                tel_fmt,
                 cliente_trinks.get("email", "") or "não informado",
                 cliente_trinks.get("cpf", "") or "não informado",
                 cliente_trinks.get("genero", "") or "não informado",

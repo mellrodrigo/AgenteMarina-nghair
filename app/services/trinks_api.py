@@ -177,9 +177,12 @@ class TrinksAPIClient:
             tel = tel[2:]
         return tel
 
-    def listar_clientes(self, nome: str = None, telefone: str = None) -> List[Dict]:
+    def listar_clientes(self, nome: str = None, telefone: str = None, incluir_detalhes: bool = False) -> List[Dict]:
         """GET /v1/clientes"""
-        params = {"estabelecimentoId": TRINKS_ESTABELECIMENTO_ID, "incluirDetalhes": "false"}
+        params = {
+            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+            "incluirDetalhes": "true" if incluir_detalhes else "false",
+        }
         if nome:
             params["nome"] = nome
         if telefone:
