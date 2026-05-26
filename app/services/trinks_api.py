@@ -192,13 +192,8 @@ class TrinksAPIClient:
         if dados is None:
             return []
         if isinstance(dados, list):
-            if incluir_detalhes and dados:
-                logger.info("[DEBUG-CLIENTE] raw[0]=%s", json.dumps(dados[0], ensure_ascii=False)[:500])
             return dados
-        itens = dados.get("data", [])
-        if incluir_detalhes and itens:
-            logger.info("[DEBUG-CLIENTE] raw[0]=%s", json.dumps(itens[0], ensure_ascii=False)[:500])
-        return itens
+        return dados.get("data", [])
 
     def criar_cliente(self, nome: str, telefone: str) -> Optional[Dict]:
         """POST /v1/clientes"""
