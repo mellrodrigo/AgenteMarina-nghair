@@ -229,13 +229,17 @@ class AICoreMariana:
 
     def _servicos_para_texto(self):
         if _servicos_cache:
-            linhas = []
-            for s in _servicos_cache[:30]:
-                preco = "R${:.0f}".format(s["preco"]) if s["preco"] else "consultar"
-                duracao = "{}min".format(s["duracao_minutos"]) if s["duracao_minutos"] else ""
-                linhas.append("- {}: {} ({})".format(s["nome"], preco, duracao))
+            linhas = ["- {}".format(s["nome"]) for s in _servicos_cache[:30]]
             return "\n".join(linhas)
-        return "- Corte Feminino: R$80 (45min)\n- Coloração: R$150 (120min)\n- Escova: R$60 (45min)"
+        return "- Corte Feminino\n- Corte Masculino\n- Coloração\n- Escova\n- Manicure\n- Pedicure"
+
+    def _servico_preco(self, nome_servico):
+        """Retorna preço de um serviço específico."""
+        nome_lower = nome_servico.lower()
+        for s in _servicos_cache:
+            if nome_lower in s["nome"].lower():
+                return "R${:.0f}".format(s["preco"]) if s["preco"] else "consultar"
+        return "consultar"
 
     def _profissionais_para_texto(self):
         if _profissionais_cache:
@@ -783,7 +787,7 @@ class AICoreMariana:
             "- Profissional preferido: {profissional_pref}\n"
             "- Horário preferido: {horario_pref}\n\n"
             "SAUDAÇÃO: {saudacao_instrucao}\n\n"
-            "SERVIÇOS E PREÇOS (atualizados do sistema):\n"
+            "SERVIÇOS DISPONÍVEIS (todos podem ser agendados):\n"
             "{servicos}\n\n"
             "PROFISSIONAIS DISPONÍVEIS:\n"
             "{profissionais}\n\n"
@@ -793,6 +797,10 @@ class AICoreMariana:
             "3. Use 1-2 emojis\n"
             "4. Sempre use o nome do cliente quando conhecido\n"
             "5. Sexo: se desconhecido e serviço for corte, pergunte 'masculino ou feminino?' e salve\n"
+            "5b. SERVIÇOS: TODOS os serviços da lista acima estão disponíveis e podem ser agendados. "
+            "NUNCA diga que não temos um serviço se ele está na lista. "
+            "Ao falar de serviços, cite apenas os nomes — NUNCA liste preços em bloco. "
+            "Informe o preço SOMENTE quando o cliente perguntar o valor de um serviço específico (ex: 'quanto custa o corte?').\n"
             "6. Para agendar: (1) pergunte serviço, profissional e data/hora, "
             "(2) chame validar_dados_cliente para mostrar os dados cadastrais do cliente e pedir confirmação, "
             "(3) se o cliente disser que algum dado está errado, peça a correção e chame atualizar_dados_cliente, "
@@ -840,14 +848,17 @@ class AICoreMariana:
         if any(p in m for p in ["serviço", "serviços", "fazem", "oferecem", "tem"]):
             if _servicos_cache:
                 top = _servicos_cache[:10]
-                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)
-                return "{}Alguns dos nossos serviços 💇‍♀️:\n{}\n\nQuer agendar ou saber mais?".format(saudacao, lista)
+                lista = "\n".join("• {}".format(s["nome"]) for s in top)
+                return "{}Nossos serviços 💇‍♀️:\n{}\n\nQuer agendar ou saber mais?".format(saudacao, lista)
 
         if any(p in m for p in ["preço", "valor", "custa", "quanto"]):
-            if _servicos_cache:
-                top = _servicos_cache[:8]
-                lista = "\n".join("• {}: R${:.0f}".format(s["nome"], s["preco"]) for s in top)
-                return "{}Nossos preços 💅:\n{}\n\nPosso agendar para você!".format(saudacao, lista)
+            servico_mencionado = next(
+                (s for s in _servicos_cache if s["nome"].lower() in m), None
+            ) if _servicos_cache else None
+            if servico_mencionado:
+                return "{}O {} custa R${:.0f} 💅 Quer agendar?".format(
+                    saudacao, servico_mencionado["nome"], servico_mencionado["preco"])
+            return "{}Me diga qual serviço você quer saber o valor 😊".format(saudacao)
 
         if any(p in m for p in ["agendar", "marcar", "horário", "hora", "vaga", "disponível"]):
             prof = self._profissionais_para_texto()
