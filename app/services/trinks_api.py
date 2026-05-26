@@ -12,6 +12,7 @@ Campos reais confirmados pela API (NGHair, estabelecimentoId=20181):
                servico{id,nome}, status{id,nome},
                observacoesDoCliente, observacoesDoEstabelecimento
 """
+import json
 import logging
 import time
 import requests
@@ -191,8 +192,13 @@ class TrinksAPIClient:
         if dados is None:
             return []
         if isinstance(dados, list):
+            if incluir_detalhes and dados:
+                logger.info("[DEBUG-CLIENTE] raw[0]=%s", json.dumps(dados[0], ensure_ascii=False)[:500])
             return dados
-        return dados.get("data", [])
+        itens = dados.get("data", [])
+        if incluir_detalhes and itens:
+            logger.info("[DEBUG-CLIENTE] raw[0]=%s", json.dumps(itens[0], ensure_ascii=False)[:500])
+        return itens
 
     def criar_cliente(self, nome: str, telefone: str) -> Optional[Dict]:
         """POST /v1/clientes"""
