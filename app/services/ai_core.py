@@ -375,6 +375,11 @@ class AICoreMariana:
         if not cliente_trinks:
             return {"erro": "Não foi possível localizar o cadastro do cliente no Trinks."}
 
+        # Propaga sexo/gênero para cliente_info para que o system prompt saiba
+        sexo_trinks = cliente_trinks.get("sexo") or cliente_trinks.get("genero", "")
+        if sexo_trinks and not cliente_info.get("sexo"):
+            cliente_info["sexo"] = sexo_trinks
+
         def _fmt_tel(obj):
             # API retorna telefone como lista de strings: ["11976820026"]
             fones = obj.get("telefone", [])
@@ -820,7 +825,8 @@ class AICoreMariana:
             "2. Seja breve (máximo 3 linhas por mensagem)\n"
             "3. Use 1-2 emojis\n"
             "4. Sempre use o nome do cliente quando conhecido\n"
-            "5. Sexo: se desconhecido e serviço for corte, pergunte 'masculino ou feminino?' e salve\n"
+            "5. Sexo do cliente: {sexo_str}. Se já conhecido, NUNCA pergunte masculino/feminino — "
+            "use diretamente 'Corte Masculino' ou 'Corte Feminino'. Só pergunte se sexo for 'Não informado'.\n"
             "5b. SERVIÇOS: TODOS os serviços da lista acima estão disponíveis e podem ser agendados. "
             "NUNCA diga que não temos um serviço se ele está na lista. "
             "Ao falar de serviços, cite apenas os nomes — NUNCA liste preços em bloco. "
