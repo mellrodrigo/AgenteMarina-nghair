@@ -131,14 +131,15 @@ class Profissional(Base):
     __tablename__ = "profissionais"
 
     id = Column(Integer, primary_key=True, index=True)
-    
+
     # Informações
     nome = Column(String(255), unique=True, nullable=False, index=True)
     cargo = Column(String(255), nullable=False)  # Cabeleireiro, Manicure, etc
-    
+    especialidade = Column(String(100), nullable=True)  # cabelo, manicure, estetica, etc
+
     # Status
     ativo = Column(Boolean, default=True)
-    
+
     # Controle
     data_atualizacao = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

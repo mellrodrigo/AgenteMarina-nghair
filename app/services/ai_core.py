@@ -558,10 +558,19 @@ class AICoreMariana:
         _debug("✅ Serviço: {} | id={} | duração={}min | valor=R${:.0f}".format(
             servico_nome, servico_id, duracao_minutos, valor_servico))
 
-        # 3. Busca profissional
+        # 3. Busca profissionais filtrados pelo serviço (Trinks) ou fallback geral
         profissional_id = None
         try:
-            profissionais = trinks_api.listar_profissionais()
+            # Tenta buscar apenas profissionais que atendem este serviço
+            profissionais_servico = trinks_api.listar_profissionais_por_servico(servico_id)
+            profissionais = profissionais_servico if profissionais_servico else trinks_api.listar_profissionais()
+            _debug("👥 {} profissionais para serviço {} (filtrado={})".format(
+                len(profissionais), servico_nome, bool(profissionais_servico)))
+        except Exception as e:
+            logger.error("Erro buscando profissionais: %s", str(e))
+            profissionais = []
+
+        if profissional_nome:
             busca = profissional_nome.strip().lower()
             partes = [p for p in busca.split() if len(p) > 2]
             for p in profissionais:
@@ -574,18 +583,15 @@ class AICoreMariana:
                     profissional_id = p["id"]
                     profissional_nome = p["nome_completo"] or p["nome"]
                     break
-        except Exception as e:
-            logger.error("Erro buscando profissional: %s", str(e))
 
         if not profissional_id:
-            try:
-                lista_profs = trinks_api.listar_profissionais()
-            except Exception:
-                lista_profs = []
             lista = "\n".join("{}⃣ {}".format(i+1, p["nome_completo"] or p["nome"])
-                              for i, p in enumerate(lista_profs))
-            _debug("⚠️ Profissional '{}' não encontrado".format(profissional_nome))
-            return {"erro": "Profissional não encontrado. Qual profissional você prefere?\n\n{}".format(lista)}
+                              for i, p in enumerate(profissionais))
+            _debug("⚠️ Profissional '{}' não encontrado — listando {} disponíveis".format(
+                profissional_nome, len(profissionais)))
+            return {
+                "erro": "Qual profissional você prefere para {}?\n\n{}".format(servico_nome, lista),
+            }
 
         # 5. Busca ou cria cliente no Trinks
         nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")

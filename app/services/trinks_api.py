@@ -147,6 +147,25 @@ class TrinksAPIClient:
         logger.info("Trinks: %d profissionais obtidos", len(profissionais))
         return profissionais
 
+    def listar_profissionais_por_servico(self, servico_id: int) -> List[Dict[str, Any]]:
+        """GET /v1/profissionais?servicoId=X — retorna profissionais que atendem o serviço.
+        Se a API não filtrar, retorna lista vazia para sinalizar fallback."""
+        itens = self._paginar("/v1/profissionais", params={"servicoId": servico_id})
+        if not itens:
+            return []
+        profissionais = []
+        for item in itens:
+            nome_exibicao = (item.get("apelido") or item.get("nome", "")).strip()
+            profissionais.append({
+                "id": item.get("id"),
+                "nome": nome_exibicao,
+                "nome_completo": item.get("nome", ""),
+                "cargo": "Profissional",
+                "ativo": True,
+            })
+        logger.info("Trinks: %d profissionais para serviço %s", len(profissionais), servico_id)
+        return profissionais
+
     # ── Clientes ──────────────────────────────────
 
     @staticmethod
@@ -395,6 +414,7 @@ class TrinksAPIClient:
                         db.add(Profissional(
                             nome=p["nome"],
                             cargo=p["cargo"],
+                            especialidade=None,  # configurar manualmente via admin
                             ativo=True,
                         ))
                         sp.commit()
