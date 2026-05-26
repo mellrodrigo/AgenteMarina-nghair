@@ -6,9 +6,16 @@ import logging
 import os
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from openai import OpenAI, RateLimitError
 
 logger = logging.getLogger(__name__)
+
+TZ_SP = ZoneInfo("America/Sao_Paulo")
+
+def _agora_sp():
+    """Retorna datetime atual no fuso de São Paulo."""
+    return datetime.now(TZ_SP)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -415,7 +422,7 @@ class AICoreMariana:
         if not cliente_id:
             return {"erro": "Não foi possível localizar o cliente para atualização."}
 
-        agora = datetime.now().strftime("%Y-%m-%d %H:%M")
+        agora = _agora_sp().strftime("%Y-%m-%d %H:%M")
         payload = {"observacoes": "Data de atualização: {}".format(agora)}
         if args.get("nome"):
             payload["nome"] = args["nome"]
@@ -676,8 +683,8 @@ class AICoreMariana:
         except Exception as e:
             logger.warning("Erro ao buscar cliente para listar agendamentos: %s", str(e))
 
-        hoje = datetime.now().strftime("%Y-%m-%d")
-        em_60_dias = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+        hoje = _agora_sp().strftime("%Y-%m-%d")
+        em_60_dias = (_agora_sp() + timedelta(days=60)).strftime("%Y-%m-%d")
         try:
             todos = trinks_api.listar_agendamentos(data_inicio=hoje, data_fim=em_60_dias)
         except Exception as e:
@@ -759,7 +766,8 @@ class AICoreMariana:
         horario_pref = preferencias.get("horario_preferido", "qualquer")
         sexo = cliente_info.get("sexo", "")
         sexo_str = {"M": "Masculino", "F": "Feminino"}.get(sexo, "Não informado")
-        data_hoje = datetime.now().strftime("%d/%m/%Y")
+        agora_sp = _agora_sp()
+        data_hoje = agora_sp.strftime("%d/%m/%Y %H:%M")
 
         if is_primeira_vez:
             saudacao_instrucao = (
