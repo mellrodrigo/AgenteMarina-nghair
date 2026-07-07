@@ -199,6 +199,7 @@ def _migrar_colunas():
     """Adiciona colunas novas em tabelas já existentes (sem recriar o banco)."""
     migracoes = [
         "ALTER TABLE clientes ADD COLUMN sexo VARCHAR(10)",
+        "ALTER TABLE profissionais ADD COLUMN especialidade VARCHAR(100)",
     ]
     with engine.connect() as conn:
         for sql in migracoes:
