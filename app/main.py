@@ -1,12 +1,15 @@
 """
-Marina - Agente de IA para NGHair
-Versão adaptada para hospedagem compartilhada Hostinger (Flask + Python 3.6+)
+Marina — Agente de IA para NGHair
+Flask + Gunicorn
 """
-import logging
 import json
+import logging
 import os
 import sys
 import threading
+import schedule
+import time
+from collections import OrderedDict
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -16,13 +19,17 @@ from app.models.database import SessionLocal, criar_tabelas
 from app.services.cliente_service import cliente_service
 from app.services.ai_core import ai_core
 from app.services.evolution_api import evolution_api_client
-from config import WHATSAPP_INSTANCE_NAME
+from app.services.trinks_api import trinks_api
+from config import WHATSAPP_INSTANCE_NAME, TRINKS_SYNC_INTERVAL
+
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('marina.log'),
+        logging.FileHandler('logs/marina.log'),
         logging.StreamHandler()
     ]
 )
@@ -30,8 +37,52 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 criar_tabelas()
-logger.info("Marina iniciada com sucesso!")
 
+# Cache de IDs de mensagens já processadas (deduplicação)
+_mensagens_processadas = OrderedDict()
+_MSG_CACHE_MAX = 500
+_msg_lock = threading.Lock()
+
+
+# ── Sync Trinks automático ────────────────────────────────────
+
+def _executar_sync():
+    db = SessionLocal()
+    try:
+        logger.info("Sync automático Trinks iniciado...")
+        ok = trinks_api.sincronizar_dados(db)
+        if ok:
+            ai_core.atualizar_contexto_trinks(db)
+            logger.info("Sync Trinks concluído e IA atualizada")
+        else:
+            logger.warning("Sync Trinks falhou")
+    except Exception as e:
+        logger.error("Erro no sync Trinks: %s", str(e))
+    finally:
+        db.close()
+
+
+def _loop_agendador():
+    """Loop do scheduler em thread separada"""
+    intervalo_horas = max(1, TRINKS_SYNC_INTERVAL // 3600)
+    schedule.every(intervalo_horas).hours.do(_executar_sync)
+    logger.info("Agendador Trinks: sync a cada %dh", intervalo_horas)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+
+def _iniciar_sync_background():
+    """Sync inicial + inicia loop agendado"""
+    threading.Thread(target=_executar_sync, daemon=True).start()
+    threading.Thread(target=_loop_agendador, daemon=True).start()
+
+
+_iniciar_sync_background()
+logger.info("Marina iniciada!")
+
+
+# ── Health ────────────────────────────────────────────────
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -39,13 +90,16 @@ def health_check():
         "status": "ok",
         "agente": "Marina",
         "salao": "NGHair",
-        "versao": "1.0.0",
+        "versao": "2.1.0",
         "timestamp": datetime.now().isoformat()
     })
 
 
+# ── Webhook WhatsApp ──────────────────────────────────────────
+
 @app.route('/webhook/whatsapp', methods=['POST'])
-def webhook_whatsapp():
+@app.route('/webhook/whatsapp/<path:event>', methods=['POST'])
+def webhook_whatsapp(event=None):
     try:
         data = request.get_json(force=True, silent=True)
         if not data:
@@ -58,17 +112,34 @@ def webhook_whatsapp():
             return jsonify({"status": "ok"}), 200
 
         msg_data = data.get('data', {})
-        direction = msg_data.get('direction', '')
-        if direction == 'out':
-            return jsonify({"status": "ok"}), 200
 
         key = msg_data.get('key', {})
         remote_jid = key.get('remoteJid', '')
+        msg_id = key.get('id', '')
+
+        # Ignora mensagens enviadas pela própria Marina (evita loop)
+        if key.get('fromMe') or msg_data.get('direction') == 'out':
+            return jsonify({"status": "ok"}), 200
+
+        # Deduplicação: ignora mensagem já processada
+        if msg_id:
+            with _msg_lock:
+                if msg_id in _mensagens_processadas:
+                    logger.info("Mensagem duplicada ignorada: %s", msg_id)
+                    return jsonify({"status": "ok"}), 200
+                _mensagens_processadas[msg_id] = True
+                if len(_mensagens_processadas) > _MSG_CACHE_MAX:
+                    _mensagens_processadas.popitem(last=False)
 
         if '@g.us' in remote_jid:
             return jsonify({"status": "ok"}), 200
 
-        telefone = remote_jid.replace('@s.whatsapp.net', '').replace('@c.us', '')
+        push_name = msg_data.get('pushName') or msg_data.get('push_name') or ''
+
+        if '@lid' in remote_jid:
+            telefone = remote_jid
+        else:
+            telefone = remote_jid.replace('@s.whatsapp.net', '').replace('@c.us', '')
 
         message = msg_data.get('message', {})
         texto = (
@@ -77,17 +148,26 @@ def webhook_whatsapp():
             message.get('imageMessage', {}).get('caption') or ''
         )
 
+        audio_msg = message.get('audioMessage') or message.get('pttMessage')
+        if not texto and audio_msg:
+            logger.info("Áudio recebido de %s (%s) — transcrevendo...", telefone, push_name)
+            threading.Thread(
+                target=processar_audio_background,
+                args=(telefone, remote_jid, msg_data, push_name),
+                daemon=True
+            ).start()
+            return jsonify({"status": "ok"}), 200
+
         if not texto or not telefone:
             return jsonify({"status": "ok"}), 200
 
-        logger.info("Mensagem de %s: %s", telefone, texto[:100])
+        logger.info("Mensagem de %s (%s): %s", telefone, push_name, texto[:100])
 
-        t = threading.Thread(
+        threading.Thread(
             target=processar_mensagem_background,
-            args=(telefone, texto, remote_jid)
-        )
-        t.daemon = True
-        t.start()
+            args=(telefone, texto, remote_jid, push_name),
+            daemon=True
+        ).start()
 
         return jsonify({"status": "ok"}), 200
 
@@ -96,17 +176,50 @@ def webhook_whatsapp():
         return jsonify({"status": "error"}), 500
 
 
-def processar_mensagem_background(telefone, texto, remote_jid):
+def processar_audio_background(telefone, remote_jid, msg_data, push_name=''):
+    """Extrai base64 do payload, transcreve com Whisper e processa como texto normal."""
+    try:
+        audio_bytes, mimetype = evolution_api_client.extrair_audio_base64(msg_data)
+        if not audio_bytes:
+            logger.warning("Não foi possível extrair áudio de %s", telefone)
+            evolution_api_client.enviar_mensagem(
+                instance=WHATSAPP_INSTANCE_NAME,
+                numero=telefone,
+                mensagem="Não consegui ouvir seu áudio 😕 Pode digitar sua mensagem?"
+            )
+            return
+
+        texto = ai_core.transcrever_audio(audio_bytes, mimetype or "audio/ogg")
+        if not texto:
+            evolution_api_client.enviar_mensagem(
+                instance=WHATSAPP_INSTANCE_NAME,
+                numero=telefone,
+                mensagem="Não consegui entender o áudio 😕 Pode digitar sua mensagem?"
+            )
+            return
+
+        logger.info("Áudio de %s transcrito: %s", telefone, texto[:100])
+        processar_mensagem_background(telefone, texto, remote_jid, push_name)
+
+    except Exception as e:
+        logger.error("Erro ao processar áudio de %s: %s", telefone, str(e))
+
+
+def processar_mensagem_background(telefone, texto, remote_jid, push_name=''):
     db = SessionLocal()
     try:
-        cliente = cliente_service.buscar_ou_criar_cliente(db, telefone)
+        cliente = cliente_service.buscar_ou_criar_cliente(db, telefone, nome=push_name or None)
+        if push_name and (not cliente.nome or cliente.nome == 'Cliente'):
+            cliente_service.atualizar_cliente(db, cliente.id, nome=push_name)
         contexto = cliente_service.obter_contexto_cliente(db, cliente.id)
         historico = cliente_service.obter_historico_conversas(db, cliente.id, limite=5)
 
         resposta, intencao = ai_core.processar_mensagem_sync(
             mensagem=texto,
             cliente_info=contexto,
-            historico_conversas=historico
+            historico_conversas=historico,
+            db=db,
+            telefone=telefone,
         )
 
         cliente_service.salvar_conversa(
@@ -119,7 +232,7 @@ def processar_mensagem_background(telefone, texto, remote_jid):
 
         evolution_api_client.enviar_mensagem(
             instance=WHATSAPP_INSTANCE_NAME,
-            numero=remote_jid,
+            numero=telefone,
             mensagem=resposta
         )
 
@@ -131,13 +244,15 @@ def processar_mensagem_background(telefone, texto, remote_jid):
             evolution_api_client.enviar_mensagem(
                 instance=WHATSAPP_INSTANCE_NAME,
                 numero=remote_jid,
-                mensagem="Desculpe, tive um problema tecnico. Pode tentar novamente? 😊"
+                mensagem="Desculpe, tive um probleminha técnico. Pode tentar novamente? 😊"
             )
         except Exception:
             pass
     finally:
         db.close()
 
+
+# ── Clientes ────────────────────────────────────────────────
 
 @app.route('/clientes', methods=['GET'])
 def listar_clientes():
@@ -151,6 +266,8 @@ def listar_clientes():
     finally:
         db.close()
 
+
+# ── Status ────────────────────────────────────────────────
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -168,7 +285,193 @@ def status():
         db.close()
 
 
+# ── Trinks API ──────────────────────────────────────────────
+
+@app.route('/trinks/status', methods=['GET'])
+def trinks_status():
+    resultado = trinks_api.testar_conexao()
+    ultima = trinks_api.ultima_sincronizacao
+    return jsonify({
+        "trinks_api": resultado,
+        "ultima_sincronizacao": ultima.isoformat() if ultima else None,
+        "timestamp": datetime.now().isoformat()
+    }), 200 if resultado["ok"] else 503
+
+
+@app.route('/trinks/sync', methods=['POST'])
+def trinks_sync():
+    db = SessionLocal()
+    try:
+        logger.info("Sync manual Trinks via API")
+        sucesso = trinks_api.sincronizar_dados(db)
+        if sucesso:
+            ai_core.atualizar_contexto_trinks(db)
+            return jsonify({
+                "status": "ok",
+                "mensagem": "Sincronização concluída",
+                "ultima_sincronizacao": trinks_api.ultima_sincronizacao.isoformat()
+            })
+        return jsonify({"status": "erro", "mensagem": "Falha na sincronização — veja os logs"}), 500
+    finally:
+        db.close()
+
+
+@app.route('/trinks/servicos', methods=['GET'])
+def trinks_servicos():
+    """Lista serviços do banco local (sincronizados do Trinks)"""
+    db = SessionLocal()
+    try:
+        from app.models.database import Servico
+        servicos = db.query(Servico).filter(Servico.ativo == True).all()
+        return jsonify({
+            "total": len(servicos),
+            "fonte": "banco_local_trinks",
+            "ultima_sincronizacao": trinks_api.ultima_sincronizacao.isoformat() if trinks_api.ultima_sincronizacao else None,
+            "servicos": [
+                {
+                    "nome": s.nome,
+                    "categoria": s.categoria,
+                    "preco": s.preco,
+                    "duracao_minutos": s.duracao_minutos
+                } for s in servicos
+            ]
+        })
+    finally:
+        db.close()
+
+
+@app.route('/trinks/profissionais', methods=['GET'])
+def trinks_profissionais():
+    """Lista profissionais do banco local (sincronizados do Trinks)"""
+    db = SessionLocal()
+    try:
+        from app.models.database import Profissional
+        profissionais = db.query(Profissional).filter(Profissional.ativo == True).all()
+        return jsonify({
+            "total": len(profissionais),
+            "profissionais": [{"nome": p.nome, "cargo": p.cargo} for p in profissionais]
+        })
+    finally:
+        db.close()
+
+
+@app.route('/trinks/agendamentos', methods=['GET'])
+def trinks_agendamentos():
+    """Lista agendamentos direto da API Trinks (tempo real)"""
+    from datetime import timedelta
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    em_30_dias = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    agendamentos = trinks_api.listar_agendamentos(data_inicio=hoje, data_fim=em_30_dias)
+    return jsonify({"total": len(agendamentos), "agendamentos": agendamentos})
+
+
+@app.route('/trinks/agendamentos', methods=['POST'])
+def criar_agendamento_trinks():
+    """Cria agendamento diretamente no Trinks"""
+    payload = request.get_json(force=True, silent=True)
+    if not payload:
+        return jsonify({"erro": "Payload inválido"}), 400
+    resultado = trinks_api.criar_agendamento(payload)
+    if resultado:
+        return jsonify({"status": "ok", "agendamento": resultado}), 201
+    return jsonify({"status": "erro", "mensagem": "Falha ao criar agendamento no Trinks"}), 500
+
+
+@app.route('/trinks/debug', methods=['GET'])
+def trinks_debug():
+    """Retorna resposta bruta da API Trinks para diagnóstico de mapeamento"""
+    import requests as req
+    from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
+    headers = {
+        "X-Api-Key": TRINKS_API_KEY,
+        "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+        "accept": "application/json",
+    }
+    resultado = {}
+    for endpoint in ["/v1/servicos", "/v1/profissionais", "/v1/agendamentos"]:
+        try:
+            r = req.get("{}{}".format(TRINKS_API_URL, endpoint), headers=headers, timeout=15)
+            resultado[endpoint] = {
+                "status_code": r.status_code,
+                "body": r.json() if r.ok else r.text[:500]
+            }
+        except Exception as e:
+            resultado[endpoint] = {"erro": str(e)}
+    return jsonify(resultado)
+
+
+@app.route('/trinks/debug/servico', methods=['GET'])
+def debug_raw_servico():
+    """Retorna campos RAW de um serviço específico do Trinks para diagnóstico"""
+    nome = request.args.get('nome', '')
+    servicos = trinks_api.listar_servicos()
+    if nome:
+        encontrados = [s for s in servicos if nome.lower() in s["nome"].lower()]
+    else:
+        encontrados = servicos[:5]
+    return jsonify({
+        "total": len(encontrados),
+        "servicos": [
+            {
+                "nome": s["nome"],
+                "id": s["id"],
+                "duracao_minutos": s["duracao_minutos"],
+                "preco": s["preco"],
+                "campos_raw": list(s.get("_raw", {}).keys()),
+                "raw_completo": s.get("_raw", {}),
+            }
+            for s in encontrados
+        ]
+    })
+
+
+@app.route('/trinks/debug/profissional', methods=['GET'])
+def debug_raw_profissional():
+    """Retorna campos RAW de profissional específico para diagnóstico"""
+    import requests as req
+    from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
+    nome = request.args.get('nome', '')
+    headers = {
+        "X-Api-Key": TRINKS_API_KEY,
+        "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+        "accept": "application/json",
+    }
+    r = req.get("{}/v1/profissionais".format(TRINKS_API_URL), headers=headers, timeout=15)
+    if not r.ok:
+        return jsonify({"erro": r.text}), r.status_code
+    dados = r.json()
+    itens = dados.get("data", dados) if isinstance(dados, dict) else dados
+    if nome:
+        itens = [p for p in itens if nome.lower() in (p.get("nome") or "").lower()
+                 or nome.lower() in (p.get("apelido") or "").lower()]
+    return jsonify({
+        "total": len(itens),
+        "profissionais_raw": itens[:10],
+    })
+
+
+@app.route('/trinks/debug/cliente', methods=['GET'])
+def debug_busca_cliente():
+    """Diagnóstico completo de busca de cliente no Trinks"""
+    telefone = request.args.get('telefone', '')
+    nome = request.args.get('nome', '')
+
+    if not telefone and not nome:
+        return jsonify({"erro": "Informe ?telefone=... ou ?nome=..."}), 400
+
+    tel_trinks = trinks_api._tel_para_trinks(telefone) if telefone else ""
+    candidatos = trinks_api.buscar_candidatos_cliente(nome, telefone)
+
+    return jsonify({
+        "telefone_original": telefone,
+        "telefone_formato_trinks": tel_trinks,
+        "nome_buscado": nome,
+        "total_candidatos": len(candidatos),
+        "candidatos": candidatos,
+    })
+
+
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8000))
     logger.info("Iniciando Marina na porta %d...", port)
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)

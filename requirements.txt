@@ -1,31 +1,27 @@
-# Marina - Dependências adaptadas para hospedagem compartilhada Hostinger
-# Compatível com Python 3.6+
+# Marina — Dependências Python 3.11
+# VPS Hostinger Ubuntu 22.04
 
-# Framework Web (Flask é mais leve que FastAPI para Python 3.6)
-flask==2.0.3
-Werkzeug==2.0.3
+# Framework Web
+flask==2.3.3
+Werkzeug==2.3.7
 
-# Banco de Dados
-SQLAlchemy==1.4.46
+# Banco de Dados (mantém compatibilidade com API legada .query())
+SQLAlchemy==1.4.52
 
 # Validação
 pydantic==1.10.13
 
-# Google Gemini
-google-generativeai==0.3.0
-protobuf==3.20.3
-
 # HTTP Client
-requests==2.27.1
-httpx==0.23.3
+requests==2.31.0
 
-# Web Scraping
-selenium==3.141.0
-beautifulsoup4==4.12.2
+# Variáveis de ambiente
+python-dotenv==1.0.0
 
-# Utilitários
-python-dotenv==0.21.1
-schedule==1.2.0
+# Scheduler (sincronização Trinks automática)
+schedule==1.2.1
 
-# Servidor WSGI
-gunicorn==20.1.0
+# OpenAI GPT
+openai>=2.0.0
+
+# Servidor WSGI (produção)
+gunicorn==21.2.0

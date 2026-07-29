@@ -28,13 +28,12 @@ class EvolutionAPIClient:
         }
 
     def enviar_mensagem(self, instance, numero, mensagem):
-        """Envia mensagem de texto via WhatsApp"""
+        """Envia mensagem de texto via WhatsApp (Evolution API v2)"""
         try:
             url = "{}/message/sendText/{}".format(self.base_url, instance)
             payload = {
                 "number": numero,
-                "options": {"delay": 1200, "presence": "composing"},
-                "textMessage": {"text": mensagem}
+                "text": mensagem,
             }
             resp = requests.post(url, json=payload, headers=self._headers(), timeout=30)
             if resp.status_code in [200, 201]:
@@ -84,6 +83,57 @@ class EvolutionAPIClient:
         except Exception as e:
             logger.error("Erro ao verificar conexao: %s", str(e))
             return False
+
+    def extrair_audio_base64(self, msg_data: dict):
+        """Extrai bytes de áudio de uma mensagem WhatsApp.
+        Tenta base64 direto no payload (WEBHOOK_GLOBAL_BASE64=true) e,
+        como fallback, chama o endpoint /chat/getBase64FromMediaMessage.
+        Retorna (bytes, mimetype) ou (None, None)."""
+        import base64 as b64lib
+
+        msg = msg_data.get("message", {})
+        mimetype = "audio/ogg; codecs=opus"
+
+        # Descobre o mimetype real do áudio
+        for campo in ["audioMessage", "pttMessage"]:
+            audio = msg.get(campo, {})
+            if isinstance(audio, dict):
+                mimetype = audio.get("mimetype", mimetype)
+                # Caso WEBHOOK_GLOBAL_BASE64=true esteja ativo
+                b64 = audio.get("base64", "")
+                if b64:
+                    try:
+                        return b64lib.b64decode(b64), mimetype
+                    except Exception as e:
+                        logger.error("Erro ao decodificar base64 de áudio: %s", str(e))
+                break
+
+        # Fallback: pede ao Evolution API para baixar e descriptografar o áudio
+        # O endpoint espera o objeto completo {key, message} do webhook
+        instance = WHATSAPP_INSTANCE_NAME
+        url = "{}/chat/getBase64FromMediaMessage/{}".format(self.base_url, instance)
+        payload = {
+            "message": {
+                "key": msg_data.get("key", {}),
+                "message": msg,
+            },
+            "convertToMp4": False,
+        }
+        try:
+            logger.info("Tentando /chat/getBase64FromMediaMessage para áudio...")
+            resp = requests.post(url, json=payload, headers=self._headers(), timeout=60)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                b64 = (data.get("base64") or
+                       data.get("data", {}).get("base64", "") or
+                       data.get("mediaData", {}).get("base64", ""))
+                if b64:
+                    return b64lib.b64decode(b64), mimetype
+            logger.error("getBase64FromMediaMessage: %s %s", resp.status_code, resp.text[:300])
+        except Exception as e:
+            logger.error("Erro em getBase64FromMediaMessage: %s", str(e))
+
+        return None, None
 
     def configurar_webhook(self, instance, webhook_url):
         """Configura webhook para receber mensagens"""

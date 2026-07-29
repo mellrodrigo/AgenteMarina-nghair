@@ -45,6 +45,24 @@ class ClienteService:
         return db.query(Cliente).filter(Cliente.telefone == telefone).first()
 
     @staticmethod
+    def atualizar_cliente(db, cliente_id, **campos):
+        """Atualiza campos do cliente (nome, profissional_preferido, etc.)"""
+        try:
+            cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+            if not cliente:
+                return False
+            for campo, valor in campos.items():
+                if hasattr(cliente, campo) and valor:
+                    setattr(cliente, campo, valor)
+            db.commit()
+            logger.info("Cliente %s atualizado: %s", cliente_id, campos)
+            return True
+        except Exception as e:
+            logger.error("Erro ao atualizar cliente %s: %s", cliente_id, str(e))
+            db.rollback()
+            return False
+
+    @staticmethod
     def obter_contexto_cliente(db, cliente_id):
         """Retorna contexto completo do cliente para a IA"""
         try:
@@ -77,9 +95,15 @@ class ClienteService:
             if cliente.horario_preferido:
                 preferencias["horario_preferido"] = cliente.horario_preferido
 
+            nome_real = cliente.nome and cliente.nome != "Cliente"
+            is_primeira_vez = not nome_real and len(conversas) == 0
+
             return {
                 "id": cliente.id,
                 "nome": cliente.nome or "Cliente",
+                "nome_conhecido": bool(nome_real),
+                "is_primeira_vez": is_primeira_vez,
+                "sexo": getattr(cliente, "sexo", None),
                 "telefone": cliente.telefone,
                 "historico_servicos": historico_servicos,
                 "preferencias": preferencias,

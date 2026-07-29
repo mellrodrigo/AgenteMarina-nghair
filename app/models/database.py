@@ -1,7 +1,7 @@
 """
 Modelos de banco de dados para Marina
 """
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Float, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Float, Boolean, ForeignKey, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -44,6 +44,7 @@ class Cliente(Base):
     profissional_preferido = Column(String(255), nullable=True)
     servico_preferido = Column(String(255), nullable=True)
     horario_preferido = Column(String(50), nullable=True)
+    sexo = Column(String(10), nullable=True)  # M ou F
     
     # Notas personalizadas
     notas = Column(Text, nullable=True)
@@ -130,14 +131,15 @@ class Profissional(Base):
     __tablename__ = "profissionais"
 
     id = Column(Integer, primary_key=True, index=True)
-    
+
     # Informações
     nome = Column(String(255), unique=True, nullable=False, index=True)
     cargo = Column(String(255), nullable=False)  # Cabeleireiro, Manicure, etc
-    
+    especialidade = Column(String(100), nullable=True)  # cabelo, manicure, estetica, etc
+
     # Status
     ativo = Column(Boolean, default=True)
-    
+
     # Controle
     data_atualizacao = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -186,11 +188,28 @@ class ConfiguracaoTrinks(Base):
 
 # Função para criar todas as tabelas
 def criar_tabelas():
-    """Cria todas as tabelas no banco de dados"""
+    """Cria todas as tabelas no banco de dados e aplica migrações pendentes"""
     Base.metadata.create_all(bind=engine)
+    # Migração: adiciona colunas novas que podem não existir em bancos antigos
+    _migrar_colunas()
 
 
 # Função para obter sessão do banco
+def _migrar_colunas():
+    """Adiciona colunas novas em tabelas já existentes (sem recriar o banco)."""
+    migracoes = [
+        "ALTER TABLE clientes ADD COLUMN sexo VARCHAR(10)",
+        "ALTER TABLE profissionais ADD COLUMN especialidade VARCHAR(100)",
+    ]
+    with engine.connect() as conn:
+        for sql in migracoes:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception:
+                pass  # coluna já existe
+
+
 def get_db():
     """Dependency para obter sessão do banco de dados"""
     db = SessionLocal()

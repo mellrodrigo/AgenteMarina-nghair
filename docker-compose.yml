@@ -1,61 +1,88 @@
-version: '3.8'
-
 services:
-  # Evolution API para WhatsApp
+  evolution-postgres:
+    image: postgres:16-alpine
+    container_name: evolution-postgres
+    environment:
+      - POSTGRES_USER=evolution
+      - POSTGRES_PASSWORD=evolution123
+      - POSTGRES_DB=evolution
+    volumes:
+      - evolution-postgres-data:/var/lib/postgresql/data
+    networks:
+      - marina-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  evolution-redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    networks:
+      - marina-network
+    restart: unless-stopped
+
   evolution-api:
-    image: atendai/evolution-api:latest
+    image: evolution-api-local:v2.3.7
     container_name: evolution-api
     ports:
       - "8080:8080"
+    depends_on:
+      evolution-postgres:
+        condition: service_healthy
     environment:
-      - NODE_ENV=production
-      - DB_CONNECTION=sqlite
-      - DB_SAVE_DATA_INSTANCE=true
-      - DB_SAVE_DATA_NEW_MESSAGE=true
-      - DB_SAVE_DATA_NEW_MESSAGE_UPDATE=true
-      - DB_SAVE_DATA_NEW_DIFFUTIL_CONTACTS=true
-      - DB_SAVE_DATA_NEW_DIFFUTIL_CHATS=true
-      - DB_SAVE_DATA_NEW_DIFFUTIL_MESSAGES=true
-      - WEBHOOK_GLOBAL_URL=http://localhost:8000/webhook/whatsapp
-      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=true
+      - SERVER_PORT=8080
+      - SERVER_URL=http://localhost:8080
+      - CORS_ORIGIN=*
+      - CORS_METHODS=POST,GET,PUT,DELETE
+      - CORS_CREDENTIALS=true
+      # Autenticação
+      - AUTHENTICATION_TYPE=apikey
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-1d0a8328a3cab91dea8f1276cbb95172}
+      # PostgreSQL
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://evolution:evolution123@evolution-postgres:5432/evolution?schema=public
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_v2
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - DATABASE_SAVE_DATA_LABELS=true
+      - DATABASE_SAVE_DATA_HISTORIC=true
+      # Redis
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://evolution-redis:6379
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=false
+      - CACHE_LOCAL_ENABLED=false
+      # Webhook global
+      - WEBHOOK_GLOBAL_URL=http://172.16.1.1:8000/webhook/whatsapp
+      - WEBHOOK_GLOBAL_ENABLED=true
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
+      - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
+      - WEBHOOK_EVENTS_CONNECTION_UPDATE=true
+      - WEBHOOK_EVENTS_SEND_MESSAGE=false
+      - WEBHOOK_EVENTS_PRESENCE_UPDATE=false
+      - WEBHOOK_EVENTS_CONTACTS_UPDATE=false
+      - WEBHOOK_EVENTS_CHATS_UPDATE=false
+      # Webhook: inclui base64 de mídias (áudio, imagem) no payload
+      - WEBHOOK_GLOBAL_BASE64=true
+      # QR Code
+      - QRCODE_LIMIT=30
+      - QRCODE_COLOR=#25D366
     volumes:
-      - evolution-data:/home/evolution/instances
+      - evolution-instances:/evolution/instances
     networks:
       - marina-network
-    restart: always
-
-  # PostgreSQL (opcional, para produção)
-  postgres:
-    image: postgres:15-alpine
-    container_name: marina-postgres
-    environment:
-      - POSTGRES_DB=marina
-      - POSTGRES_USER=marina
-      - POSTGRES_PASSWORD=marina_secure_password_123
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - marina-network
-    restart: always
-
-  # Redis (opcional, para cache e filas)
-  redis:
-    image: redis:7-alpine
-    container_name: marina-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    networks:
-      - marina-network
-    restart: always
+    restart: unless-stopped
 
 volumes:
-  evolution-data:
-  postgres-data:
-  redis-data:
+  evolution-postgres-data:
+  evolution-instances:
 
 networks:
   marina-network:
