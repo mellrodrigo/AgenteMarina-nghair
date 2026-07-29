@@ -957,14 +957,14 @@ class AICoreMariana:
             if not resposta:
                 resposta = self._resposta_fallback(mensagem, cliente_info)
 
-            if not resposta.startswith("Marina IA:"):
-                resposta = "Marina IA: " + resposta
+            if not resposta.startswith("Marina AI :"):
+                resposta = "Marina AI : " + resposta
 
             intencao = self._classificar_intencao(mensagem)
             return resposta, intencao
         except Exception as e:
             logger.error("Erro ao processar: %s", str(e))
-            return "Marina IA: Desculpe, tive um problema técnico. Pode tentar novamente? 😊", "erro"
+            return "Marina AI : Desculpe, tive um problema técnico. Pode tentar novamente? 😊", "erro"
 
     def _classificar_intencao(self, mensagem):
         m = mensagem.lower()
