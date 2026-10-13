@@ -1,74 +1,107 @@
 #!/bin/bash
-
 # Script de deployment da Marina no VPS Hostinger
-# Executar como: bash deploy.sh
+# Executar como root: bash deploy.sh
+# Para setup inicial do VPS use: bash setup_vps.sh
 
 set -e
 
-echo "🚀 Iniciando deployment da Marina..."
-
-# Cores para output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'
+NC='\033[0m'
 
-# Configurações
-APP_DIR="/home/www-data/marina"
+APP_DIR="/home/marina"
 VENV_DIR="$APP_DIR/venv"
 SERVICE_NAME="marina"
-USER="www-data"
+REPO_URL="${REPO_URL:-}"
 
-# 1. Criar diretório da aplicação
-echo -e "${YELLOW}[1/8]${NC} Criando diretório da aplicação..."
-sudo mkdir -p $APP_DIR
-sudo chown -R $USER:$USER $APP_DIR
+echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║   Marina AI Agent — Deploy NGHair        ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
+echo ""
 
-# 2. Clonar repositório (ou copiar arquivos)
-echo -e "${YELLOW}[2/8]${NC} Copiando arquivos da aplicação..."
-# Se estiver usando git:
-# cd $APP_DIR
-# sudo -u $USER git clone <seu-repo> .
-# Ou copiar manualmente:
-# sudo cp -r marina/* $APP_DIR/
+# 1. Criar/atualizar diretório da aplicação
+echo -e "${YELLOW}[1/8]${NC} Preparando diretório da aplicação..."
+mkdir -p "$APP_DIR/data" "$APP_DIR/logs"
 
-# 3. Criar ambiente virtual
-echo -e "${YELLOW}[3/8]${NC} Criando ambiente virtual..."
-sudo -u $USER python3 -m venv $VENV_DIR
+if [ -n "$REPO_URL" ]; then
+    if [ -d "$APP_DIR/.git" ]; then
+        echo "  Atualizando repositório..."
+        git -C "$APP_DIR" pull origin main
+    else
+        echo "  Clonando repositório..."
+        git clone "$REPO_URL" "$APP_DIR"
+    fi
+else
+    echo "  Copiando arquivos do diretório atual..."
+    rsync -av --exclude='.git' --exclude='venv' --exclude='__pycache__' \
+          --exclude='*.pyc' --exclude='data/*.db' \
+          ./ "$APP_DIR/"
+fi
 
-# 4. Instalar dependências
-echo -e "${YELLOW}[4/8]${NC} Instalando dependências..."
-sudo -u $USER $VENV_DIR/bin/pip install --upgrade pip
-sudo -u $USER $VENV_DIR/bin/pip install -r $APP_DIR/requirements.txt
+# 2. Criar ambiente virtual Python
+echo -e "${YELLOW}[2/8]${NC} Criando ambiente virtual Python..."
+python3 -m venv "$VENV_DIR"
 
-# 5. Configurar arquivo .env
-echo -e "${YELLOW}[5/8]${NC} Configurando arquivo .env..."
+# 3. Instalar dependências
+echo -e "${YELLOW}[3/8]${NC} Instalando dependências Python..."
+"$VENV_DIR/bin/pip" install --upgrade pip --quiet
+"$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt" --quiet
+"$VENV_DIR/bin/pip" install gunicorn --quiet
+
+# 4. Verificar arquivo .env
+echo -e "${YELLOW}[4/8]${NC} Verificando arquivo .env..."
 if [ ! -f "$APP_DIR/.env" ]; then
-    echo "⚠️  Arquivo .env não encontrado!"
-    echo "Por favor, crie o arquivo .env com as configurações necessárias:"
-    echo "  cp $APP_DIR/.env.example $APP_DIR/.env"
-    echo "  nano $APP_DIR/.env"
+    echo -e "${RED}  ATENÇÃO: Arquivo .env não encontrado!${NC}"
+    echo "  Execute: cp $APP_DIR/.env.example $APP_DIR/.env && nano $APP_DIR/.env"
     exit 1
 fi
 
-# 6. Inicializar banco de dados
-echo -e "${YELLOW}[6/8]${NC} Inicializando banco de dados..."
-cd $APP_DIR
-sudo -u $USER $VENV_DIR/bin/python3 -c "from app.models.database import criar_tabelas; criar_tabelas()"
+# Verificar variáveis críticas
+source "$APP_DIR/.env"
+MISSING=()
+[ -z "$GEMINI_API_KEY" ]     && MISSING+=("GEMINI_API_KEY")
+[ -z "$TRINKS_API_KEY" ]     && MISSING+=("TRINKS_API_KEY")
+[ -z "$EVOLUTION_API_KEY" ]  && MISSING+=("EVOLUTION_API_KEY")
+[ -z "$API_WEBHOOK_URL" ]    && MISSING+=("API_WEBHOOK_URL")
+[ -z "$SECRET_KEY" ]         && MISSING+=("SECRET_KEY")
 
-# 7. Criar serviço systemd
-echo -e "${YELLOW}[7/8]${NC} Criando serviço systemd..."
-sudo tee /etc/systemd/system/$SERVICE_NAME.service > /dev/null <<EOF
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo -e "${RED}  ATENÇÃO: Variáveis obrigatórias não configuradas:${NC}"
+    for v in "${MISSING[@]}"; do echo "    - $v"; done
+    echo "  Edite o arquivo: nano $APP_DIR/.env"
+    exit 1
+fi
+
+# 5. Inicializar banco de dados
+echo -e "${YELLOW}[5/8]${NC} Inicializando banco de dados..."
+cd "$APP_DIR"
+"$VENV_DIR/bin/python3" -c "from app.models.database import criar_tabelas; criar_tabelas()"
+
+# 6. Definir permissões
+echo -e "${YELLOW}[6/8]${NC} Configurando permissões..."
+chmod 600 "$APP_DIR/.env"
+chmod -R 755 "$APP_DIR"
+
+# 7. Criar serviço systemd (gunicorn + Flask)
+echo -e "${YELLOW}[7/8]${NC} Configurando serviço systemd..."
+cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
-Description=Marina AI Agent for NGHair
+Description=Marina AI Agent — NGHair
 After=network.target
 
 [Service]
-Type=notify
-User=$USER
+User=root
 WorkingDirectory=$APP_DIR
-Environment="PATH=$VENV_DIR/bin"
 EnvironmentFile=$APP_DIR/.env
-ExecStart=$VENV_DIR/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=$VENV_DIR/bin/gunicorn app.main:app \
+    --bind 0.0.0.0:8000 \
+    --workers 2 \
+    --threads 4 \
+    --timeout 120 \
+    --access-logfile $APP_DIR/logs/access.log \
+    --error-logfile $APP_DIR/logs/error.log \
+    --log-level info
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -79,51 +112,22 @@ WantedBy=multi-user.target
 EOF
 
 # 8. Iniciar serviço
-echo -e "${YELLOW}[8/8]${NC} Iniciando serviço..."
-sudo systemctl daemon-reload
-sudo systemctl enable $SERVICE_NAME
-sudo systemctl start $SERVICE_NAME
+echo -e "${YELLOW}[8/8]${NC} Iniciando serviço Marina..."
+systemctl daemon-reload
+systemctl enable $SERVICE_NAME
+systemctl restart $SERVICE_NAME
 
-# Verificar status
-sleep 2
-if sudo systemctl is-active --quiet $SERVICE_NAME; then
-    echo -e "${GREEN}✅ Marina iniciada com sucesso!${NC}"
+sleep 3
+if systemctl is-active --quiet $SERVICE_NAME; then
     echo ""
-    echo "Status do serviço:"
-    sudo systemctl status $SERVICE_NAME --no-pager
+    echo -e "${GREEN}✅ Marina está rodando!${NC}"
     echo ""
-    echo "Para visualizar logs:"
-    echo "  sudo journalctl -u $SERVICE_NAME -f"
+    echo "  Health check:  curl http://localhost:8000/health"
+    echo "  Logs:          journalctl -u marina -f"
+    echo "  Status Trinks: curl http://localhost:8000/trinks/status"
+    echo ""
 else
-    echo "❌ Erro ao iniciar Marina"
-    sudo systemctl status $SERVICE_NAME --no-pager
+    echo -e "${RED}❌ Falha ao iniciar Marina${NC}"
+    journalctl -u $SERVICE_NAME -n 30 --no-pager
     exit 1
 fi
-
-# Configurar Nginx (opcional)
-echo ""
-echo -e "${YELLOW}Próximos passos:${NC}"
-echo "1. Configurar Nginx como reverse proxy"
-echo "2. Configurar SSL com Let's Encrypt"
-echo "3. Configurar Evolution API"
-echo "4. Testar webhook do WhatsApp"
-echo ""
-echo "Exemplo de configuração Nginx:"
-echo ""
-cat << 'NGINX'
-server {
-    listen 80;
-    server_name seu-dominio.com;
-    
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-NGINX
-
-echo ""
-echo -e "${GREEN}Deployment concluído! 🎉${NC}"
