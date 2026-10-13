@@ -176,6 +176,28 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "escolher_salao",
+            "description": (
+                "Registra qual unidade NGHair o cliente deseja ser atendido. "
+                "Use quando o cliente mencionar 'Campo Belo' ou 'Brooklin', ou quando precisar perguntar qual unidade. "
+                "Deve ser chamado ANTES de verificar disponibilidade ou criar agendamento."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "salao": {
+                        "type": "string",
+                        "enum": ["campo-belo", "brooklin"],
+                        "description": "Slug da unidade: 'campo-belo' ou 'brooklin'"
+                    },
+                },
+                "required": ["salao"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "buscar_cliente_staff",
             "description": (
                 "[MODO STAFF] Busca um cliente no Trinks pelo nome, telefone ou e-mail. "
@@ -308,7 +330,7 @@ class AICoreMariana:
         return None
 
     def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info,
-                               trinks_client=None, whatsapp_instance=None):
+                               trinks_client=None, whatsapp_instance=None, salao_ctx=None):
         """Chama GPT com function calling; executa tools em loop até resposta final."""
         global _client
         if not _client:
@@ -357,6 +379,7 @@ class AICoreMariana:
                     tc.function.name, args, db, telefone, cliente_info,
                     trinks_client=trinks_client,
                     whatsapp_instance=whatsapp_instance,
+                    salao_ctx=salao_ctx,
                 )
                 messages.append({
                     "role": "tool",
@@ -370,10 +393,13 @@ class AICoreMariana:
     # ── Execução das tools ────────────────────────────────────
 
     def _executar_tool(self, nome, args, db, telefone, cliente_info,
-                       trinks_client=None, whatsapp_instance=None):
-        tc = trinks_client  # shorthand
+                       trinks_client=None, whatsapp_instance=None, salao_ctx=None):
+        # Usa o trinks_client do contexto de salão (pode ter sido atualizado por escolher_salao)
+        tc = (salao_ctx or {}).get("trinks_client") or trinks_client
         wi = whatsapp_instance
-        if nome == "salvar_dados_cliente":
+        if nome == "escolher_salao":
+            return self._tool_escolher_salao(args, salao_ctx)
+        elif nome == "salvar_dados_cliente":
             return self._tool_salvar_dados_cliente(args, db, cliente_info)
         elif nome == "verificar_disponibilidade":
             return self._tool_disponibilidade(args, trinks_client=tc)
@@ -395,6 +421,25 @@ class AICoreMariana:
         elif nome == "buscar_cliente_staff":
             return self._tool_buscar_cliente_staff(args, trinks_client=tc)
         return {"erro": "Ferramenta desconhecida: {}".format(nome)}
+
+    def _tool_escolher_salao(self, args, salao_ctx):
+        from app.services.trinks_api import get_trinks_para_salao
+        from config import SALOES
+        slug = args.get("salao", "")
+        cfg = SALOES.get(slug)
+        if not cfg:
+            return {"erro": "Unidade desconhecida. Escolha 'campo-belo' ou 'brooklin'."}
+        if salao_ctx is not None:
+            salao_ctx["slug"] = slug
+            salao_ctx["nome"] = cfg["nome"]
+            salao_ctx["trinks_client"] = get_trinks_para_salao(slug)
+        logger.info("Salão escolhido: %s (%s)", cfg["nome"], slug)
+        return {
+            "sucesso": True,
+            "salao_slug": slug,
+            "salao_nome": cfg["nome"],
+            "mensagem": "Unidade {} selecionada. Pode prosseguir!".format(cfg["nome"]),
+        }
 
     def _tool_validar_dados_cliente(self, args, telefone, cliente_info, trinks_client=None):
         from app.services.trinks_api import trinks_api
@@ -896,7 +941,7 @@ class AICoreMariana:
 
     # ── Prompt ──────────────────────────────────────────
 
-    def _construir_system_prompt(self, cliente_info, salao_nome=None):
+    def _construir_system_prompt(self, cliente_info, salao_slug=None, salao_nome=None):
         nome_cliente = cliente_info.get("nome", "Cliente")
         nome_conhecido = cliente_info.get("nome_conhecido", False)
         is_primeira_vez = cliente_info.get("is_primeira_vez", False)
@@ -911,6 +956,7 @@ class AICoreMariana:
         agora_sp = _agora_sp()
         data_hoje = agora_sp.strftime("%d/%m/%Y %H:%M")
         salao = salao_nome or self.salao_name
+        salao_definido = bool(salao_slug)
 
         if is_primeira_vez:
             saudacao_instrucao = (
@@ -926,8 +972,19 @@ class AICoreMariana:
                 "NOME DESCONHECIDO: pergunte o nome do cliente na primeira oportunidade natural e salve com salvar_dados_cliente."
             )
 
+        salao_instrucao = (
+            "UNIDADE ATUAL: {salao}. "
+            "O cliente já escolheu esta unidade — prossiga normalmente."
+        ).format(salao=salao) if salao_definido else (
+            "UNIDADE NÃO DEFINIDA: o NGHair tem duas unidades — Campo Belo e Brooklin. "
+            "Antes de agendar qualquer serviço, PERGUNTE qual unidade o cliente deseja "
+            "e chame escolher_salao com 'campo-belo' ou 'brooklin'. "
+            "Para outros assuntos (preços, dúvidas) responda normalmente sem exigir a escolha."
+        )
+
         return (
-            "Você é a {nome}, assistente virtual do salão {salao}. Hoje é {data_hoje}.\n\n"
+            "Você é a {nome}, assistente virtual do NGHair. Hoje é {data_hoje}.\n\n"
+            "UNIDADE: {salao_instrucao}\n\n"
             "PERFIL:\n"
             "- Tom: profissional, amigável e acolhedora\n"
             "- Objetivo: ajudar com agendamentos reais via sistema, serviços e recomendações\n\n"
@@ -953,7 +1010,8 @@ class AICoreMariana:
             "NUNCA diga que não temos um serviço se ele está na lista. "
             "Ao falar de serviços, cite apenas os nomes — NUNCA liste preços em bloco. "
             "Informe o preço SOMENTE quando o cliente perguntar o valor de um serviço específico (ex: 'quanto custa o corte?').\n"
-            "6. Para agendar: (1) pergunte serviço, profissional e data/hora, "
+            "6. Para agendar: (1) SE unidade não definida, pergunte e chame escolher_salao PRIMEIRO, "
+            "(2) pergunte serviço, profissional e data/hora, "
             "(2) chame validar_dados_cliente para mostrar os dados cadastrais do cliente e pedir confirmação, "
             "(3) se o cliente disser que algum dado está errado, peça a correção e chame atualizar_dados_cliente, "
             "(4) após confirmação dos dados, chame criar_agendamento. "
@@ -978,6 +1036,7 @@ class AICoreMariana:
         ).format(
             nome=self.marina_name,
             salao=salao,
+            salao_instrucao=salao_instrucao,
             data_hoje=data_hoje,
             nome_cliente=nome_cliente,
             sexo_str=sexo_str,
@@ -1096,8 +1155,11 @@ class AICoreMariana:
         return digits in STAFF_PHONES or ("55" + digits) in STAFF_PHONES or digits.lstrip("55") in STAFF_PHONES
 
     def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,
-                                 db=None, telefone=None, salao_nome=None,
+                                 db=None, telefone=None, salao_slug=None, salao_nome=None,
                                  trinks_client=None, whatsapp_instance=None):
+        # Contexto mutável compartilhado com as tools para capturar escolha de salão
+        salao_ctx = {"slug": salao_slug, "nome": salao_nome, "trinks_client": trinks_client}
+
         try:
             is_staff = self._is_staff(telefone or "")
             if is_staff:
@@ -1108,7 +1170,7 @@ class AICoreMariana:
                             funcionario_nome, telefone, salao_nome or self.salao_name)
             else:
                 system_prompt = self._construir_system_prompt(
-                    cliente_info, salao_nome=salao_nome)
+                    cliente_info, salao_slug=salao_slug, salao_nome=salao_nome)
             messages = [{"role": "system", "content": system_prompt}]
 
             if historico_conversas:
@@ -1135,6 +1197,7 @@ class AICoreMariana:
                 messages, db, telefone, cliente_info,
                 trinks_client=trinks_client,
                 whatsapp_instance=whatsapp_instance,
+                salao_ctx=salao_ctx,
             )
 
             if not resposta:
@@ -1144,10 +1207,10 @@ class AICoreMariana:
                 resposta = "Marina AI : " + resposta
 
             intencao = self._classificar_intencao(mensagem)
-            return resposta, intencao
+            return resposta, intencao, salao_ctx.get("slug")
         except Exception as e:
             logger.error("Erro ao processar: %s", str(e))
-            return "Marina AI : Desculpe, tive um problema técnico. Pode tentar novamente? 😊", "erro"
+            return "Marina AI : Desculpe, tive um problema técnico. Pode tentar novamente? 😊", "erro", salao_slug
 
     def _classificar_intencao(self, mensagem):
         m = mensagem.lower()

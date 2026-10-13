@@ -453,24 +453,15 @@ trinks_api = TrinksAPIClient()
 _trinks_por_salao: dict = {}
 
 
-def get_trinks_para_salao(instance_name: str) -> "TrinksAPIClient":
-    """Retorna (ou cria) o cliente Trinks correto para a instância Evolution API informada."""
+def get_trinks_para_salao(slug: str) -> "TrinksAPIClient":
+    """Retorna (ou cria) o cliente Trinks correto para o slug do salão ('campo-belo' ou 'brooklin')."""
     from config import SALOES, SALAO_PADRAO
-    if instance_name and instance_name in SALOES:
-        if instance_name not in _trinks_por_salao:
-            cfg = SALOES[instance_name]
-            _trinks_por_salao[instance_name] = TrinksAPIClient(
-                api_key=cfg["trinks_api_key"],
-                estabelecimento_id=cfg["trinks_estabelecimento_id"],
-                api_url=cfg["trinks_api_url"],
-            )
-        return _trinks_por_salao[instance_name]
-    # Fallback: salão padrão
-    if "default" not in _trinks_por_salao:
-        cfg = SALAO_PADRAO
-        _trinks_por_salao["default"] = TrinksAPIClient(
+    chave = slug if slug and slug in SALOES else "default"
+    if chave not in _trinks_por_salao:
+        cfg = SALOES.get(slug, SALAO_PADRAO)
+        _trinks_por_salao[chave] = TrinksAPIClient(
             api_key=cfg["trinks_api_key"],
             estabelecimento_id=cfg["trinks_estabelecimento_id"],
             api_url=cfg["trinks_api_url"],
         )
-    return _trinks_por_salao["default"]
+    return _trinks_por_salao[chave]
