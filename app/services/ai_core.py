@@ -941,6 +941,15 @@ class AICoreMariana:
 
     # ── Prompt ──────────────────────────────────────────
 
+    @staticmethod
+    def _info_saloes():
+        from config import SALOES
+        linhas = []
+        for cfg in SALOES.values():
+            linhas.append("• {} — {} | Instagram: {}".format(
+                cfg["nome"], cfg["endereco"], cfg.get("instagram", "")))
+        return "\n".join(linhas)
+
     def _construir_system_prompt(self, cliente_info, salao_slug=None, salao_nome=None):
         nome_cliente = cliente_info.get("nome", "Cliente")
         nome_conhecido = cliente_info.get("nome_conhecido", False)
@@ -972,15 +981,20 @@ class AICoreMariana:
                 "NOME DESCONHECIDO: pergunte o nome do cliente na primeira oportunidade natural e salve com salvar_dados_cliente."
             )
 
+        from config import SALOES as _SALOES
+        cfg_atual = _SALOES.get(salao_slug, {})
+        endereco_atual = cfg_atual.get("endereco", "")
+
         salao_instrucao = (
-            "UNIDADE ATUAL: {salao}. "
+            "UNIDADE ATUAL: {salao} — {endereco}. "
             "O cliente já escolheu esta unidade — prossiga normalmente."
-        ).format(salao=salao) if salao_definido else (
-            "UNIDADE NÃO DEFINIDA: o NGHair tem duas unidades — Campo Belo e Brooklin. "
+        ).format(salao=salao, endereco=endereco_atual) if salao_definido else (
+            "UNIDADE NÃO DEFINIDA: o NGHair tem duas unidades:\n"
+            "{info_saloes}\n"
             "Antes de agendar qualquer serviço, PERGUNTE qual unidade o cliente deseja "
             "e chame escolher_salao com 'campo-belo' ou 'brooklin'. "
-            "Para outros assuntos (preços, dúvidas) responda normalmente sem exigir a escolha."
-        )
+            "Para outros assuntos (preços, localização, dúvidas) responda normalmente."
+        ).format(info_saloes=self._info_saloes())
 
         return (
             "Você é a {nome}, assistente virtual do NGHair. Hoje é {data_hoje}.\n\n"
@@ -1056,8 +1070,10 @@ class AICoreMariana:
         data_hoje = agora_sp.strftime("%d/%m/%Y %H:%M")
         salao = salao_nome or self.salao_name
         return (
-            "Você é a {nome}, assistente administrativa do salão {salao}. Hoje é {data_hoje}.\n\n"
+            "Você é a {nome}, assistente administrativa do NGHair. Hoje é {data_hoje}.\n\n"
             "MODO: STAFF — você está conversando com um funcionário do salão: {funcionario}.\n\n"
+            "UNIDADES:\n"
+            "{info_saloes}\n\n"
             "PERFIL:\n"
             "- Tom: eficiente, direto e prestativo\n"
             "- Objetivo: ajudar o funcionário a gerenciar agendamentos e cadastros de clientes\n\n"
@@ -1081,9 +1097,9 @@ class AICoreMariana:
             "8. NUNCA invente IDs ou confirme operações sem retorno sucesso=True."
         ).format(
             nome=self.marina_name,
-            salao=salao,
             data_hoje=data_hoje,
             funcionario=funcionario_nome,
+            info_saloes=self._info_saloes(),
             servicos=self._servicos_para_texto(),
             profissionais=self._profissionais_para_texto(),
         )

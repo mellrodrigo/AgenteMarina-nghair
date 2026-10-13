@@ -56,6 +56,9 @@ SALOES = {
     "campo-belo": {
         "nome": "NGHair Campo Belo",
         "slug": "campo-belo",
+        "endereco": "Rua João Álvares Soares, 1292 - Campo Belo, São Paulo",
+        "instagram": "@nghair",
+        "trinks_url": "https://www.trinks.com/nghaircampobelo/framebusca",
         "trinks_api_key": os.getenv("TRINKS_API_KEY", TRINKS_API_KEY),
         "trinks_estabelecimento_id": os.getenv("TRINKS_ESTABELECIMENTO_ID_CAMPO_BELO", "20181"),
         "trinks_api_url": TRINKS_API_URL,
@@ -63,6 +66,9 @@ SALOES = {
     "brooklin": {
         "nome": "NGHair Brooklin",
         "slug": "brooklin",
+        "endereco": "Rua Barão do Triunfo, 1455 - Brooklin, São Paulo",
+        "instagram": "@nghair.brooklin",
+        "trinks_url": "https://www.trinks.com/nghair-brooklin/framebusca",
         "trinks_api_key": os.getenv("TRINKS_API_KEY_BROOKLIN", TRINKS_API_KEY),
         "trinks_estabelecimento_id": os.getenv("TRINKS_ESTABELECIMENTO_ID_BROOKLIN", "281029"),
         "trinks_api_url": TRINKS_API_URL,
