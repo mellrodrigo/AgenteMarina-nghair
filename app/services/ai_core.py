@@ -307,7 +307,8 @@ class AICoreMariana:
                     time.sleep(2 ** attempt)
         return None
 
-    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info):
+    def _chamar_gpt_com_tools(self, messages, db, telefone, cliente_info,
+                               trinks_client=None, whatsapp_instance=None):
         """Chama GPT com function calling; executa tools em loop até resposta final."""
         global _client
         if not _client:
@@ -352,7 +353,11 @@ class AICoreMariana:
                     args = json.loads(tc.function.arguments)
                 except Exception:
                     args = {}
-                resultado = self._executar_tool(tc.function.name, args, db, telefone, cliente_info)
+                resultado = self._executar_tool(
+                    tc.function.name, args, db, telefone, cliente_info,
+                    trinks_client=trinks_client,
+                    whatsapp_instance=whatsapp_instance,
+                )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -364,39 +369,48 @@ class AICoreMariana:
 
     # ── Execução das tools ────────────────────────────────────
 
-    def _executar_tool(self, nome, args, db, telefone, cliente_info):
+    def _executar_tool(self, nome, args, db, telefone, cliente_info,
+                       trinks_client=None, whatsapp_instance=None):
+        tc = trinks_client  # shorthand
+        wi = whatsapp_instance
         if nome == "salvar_dados_cliente":
             return self._tool_salvar_dados_cliente(args, db, cliente_info)
         elif nome == "verificar_disponibilidade":
-            return self._tool_disponibilidade(args)
+            return self._tool_disponibilidade(args, trinks_client=tc)
         elif nome == "criar_agendamento":
-            return self._tool_criar_agendamento(args, telefone, cliente_info)
+            return self._tool_criar_agendamento(args, telefone, cliente_info,
+                                                 trinks_client=tc, whatsapp_instance=wi)
         elif nome == "listar_agendamentos_cliente":
-            return self._tool_listar_agendamentos_cliente(args, telefone, cliente_info)
+            return self._tool_listar_agendamentos_cliente(args, telefone, cliente_info,
+                                                           trinks_client=tc)
         elif nome == "cancelar_agendamento":
-            return self._tool_cancelar_agendamento(args, telefone)
+            return self._tool_cancelar_agendamento(args, telefone, trinks_client=tc,
+                                                    whatsapp_instance=wi)
         elif nome == "validar_dados_cliente":
-            return self._tool_validar_dados_cliente(args, telefone, cliente_info)
+            return self._tool_validar_dados_cliente(args, telefone, cliente_info,
+                                                     trinks_client=tc)
         elif nome == "atualizar_dados_cliente":
-            return self._tool_atualizar_dados_cliente(args, telefone, cliente_info)
+            return self._tool_atualizar_dados_cliente(args, telefone, cliente_info,
+                                                       trinks_client=tc)
         elif nome == "buscar_cliente_staff":
-            return self._tool_buscar_cliente_staff(args)
+            return self._tool_buscar_cliente_staff(args, trinks_client=tc)
         return {"erro": "Ferramenta desconhecida: {}".format(nome)}
 
-    def _tool_validar_dados_cliente(self, args, telefone, cliente_info):
+    def _tool_validar_dados_cliente(self, args, telefone, cliente_info, trinks_client=None):
         from app.services.trinks_api import trinks_api
+        trinks_api_use = trinks_client or trinks_api
         nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
         tel_cliente = telefone or ""
 
         cliente_id = None
         cliente_trinks = None
         try:
-            candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+            candidatos = trinks_api_use.buscar_candidatos_cliente(nome_cliente, tel_cliente)
             if candidatos:
                 cliente_id = candidatos[0].get("id")
                 cliente_info["_trinks_id"] = cliente_id
                 # Busca por ID para obter dados completos incluindo telefone
-                cliente_trinks = trinks_api.buscar_cliente_por_id(cliente_id) or candidatos[0]
+                cliente_trinks = trinks_api_use.buscar_cliente_por_id(cliente_id) or candidatos[0]
         except Exception as e:
             logger.warning("Erro ao buscar cliente para validação: %s", str(e))
 
@@ -447,15 +461,16 @@ class AICoreMariana:
             ),
         }
 
-    def _tool_atualizar_dados_cliente(self, args, telefone, cliente_info):
+    def _tool_atualizar_dados_cliente(self, args, telefone, cliente_info, trinks_client=None):
         from app.services.trinks_api import trinks_api
+        trinks_api_use = trinks_client or trinks_api
         from datetime import datetime
 
         cliente_id = cliente_info.get("_trinks_id")
         if not cliente_id:
             nome_cliente = cliente_info.get("nome", "")
             try:
-                candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, telefone or "")
+                candidatos = trinks_api_use.buscar_candidatos_cliente(nome_cliente, telefone or "")
                 if candidatos:
                     cliente_id = candidatos[0].get("id")
                     cliente_info["_trinks_id"] = cliente_id
@@ -476,7 +491,7 @@ class AICoreMariana:
         if args.get("genero"):
             payload["genero"] = args["genero"]
 
-        ok = trinks_api.atualizar_cliente(cliente_id, payload)
+        ok = trinks_api_use.atualizar_cliente(cliente_id, payload)
         if ok:
             campos = [k for k in ("nome", "email", "cpf", "genero") if k in payload]
             return {
@@ -487,8 +502,9 @@ class AICoreMariana:
             }
         return {"erro": "Não foi possível atualizar o cadastro. Tente novamente."}
 
-    def _tool_buscar_cliente_staff(self, args):
+    def _tool_buscar_cliente_staff(self, args, trinks_client=None):
         from app.services.trinks_api import trinks_api
+        trinks_api = trinks_client or trinks_api
 
         nome = args.get("nome", "").strip()
         telefone = args.get("telefone", "").strip()
@@ -571,8 +587,9 @@ class AICoreMariana:
             return {"sucesso": True, "dados_salvos": campos}
         return {"erro": "Não foi possível salvar os dados"}
 
-    def _tool_disponibilidade(self, args):
+    def _tool_disponibilidade(self, args, trinks_client=None):
         from app.services.trinks_api import trinks_api
+        trinks_api_use = trinks_client or trinks_api
         data = args.get("data", "")
         servico_nome = args.get("servico_nome", "")
         profissional_nome = args.get("profissional_nome", "")
@@ -583,13 +600,13 @@ class AICoreMariana:
         if servico_nome or profissional_nome:
             try:
                 if servico_nome:
-                    servicos = trinks_api.listar_servicos()
+                    servicos = trinks_api_use.listar_servicos()
                     for s in servicos:
                         if servico_nome.lower() in s["nome"].lower():
                             servico_id = s["id"]
                             break
                 if profissional_nome:
-                    profissionais = trinks_api.listar_profissionais()
+                    profissionais = trinks_api_use.listar_profissionais()
                     for p in profissionais:
                         if profissional_nome.lower() in p["nome"].lower():
                             profissional_id = p["id"]
@@ -597,7 +614,7 @@ class AICoreMariana:
             except Exception as e:
                 logger.error("Erro buscando IDs Trinks: %s", str(e))
 
-        horarios = trinks_api.horarios_disponiveis(data, servico_id, profissional_id)
+        horarios = trinks_api_use.horarios_disponiveis(data, servico_id, profissional_id)
 
         if horarios:
             return {
@@ -613,16 +630,19 @@ class AICoreMariana:
             "mensagem": "Sem horários disponíveis para esta data. Tente outra data.",
         }
 
-    def _tool_criar_agendamento(self, args, telefone, cliente_info):
+    def _tool_criar_agendamento(self, args, telefone, cliente_info,
+                                trinks_client=None, whatsapp_instance=None):
         from app.services.trinks_api import trinks_api
         from app.services.evolution_api import evolution_api_client
         from config import WHATSAPP_INSTANCE_NAME
+        trinks_api_use = trinks_client or trinks_api
+        wi = whatsapp_instance or WHATSAPP_INSTANCE_NAME
 
         def _debug(msg):
             logger.info("[DEBUG-AGENDAMENTO] %s", msg)
             try:
                 evolution_api_client.enviar_mensagem(
-                    instance=WHATSAPP_INSTANCE_NAME,
+                    instance=wi,
                     numero=telefone,
                     mensagem="🔧 *[DEV]* " + msg,
                 )
@@ -653,7 +673,7 @@ class AICoreMariana:
         duracao_minutos = 60
         valor_servico = 0.0
         try:
-            servicos = trinks_api.listar_servicos()
+            servicos = trinks_api_use.listar_servicos()
             for s in servicos:
                 if servico_nome.lower() in s["nome"].lower():
                     servico_id = s["id"]
@@ -675,8 +695,8 @@ class AICoreMariana:
         profissional_id = None
         try:
             # Tenta buscar apenas profissionais que atendem este serviço
-            profissionais_servico = trinks_api.listar_profissionais_por_servico(servico_id)
-            profissionais = profissionais_servico if profissionais_servico else trinks_api.listar_profissionais()
+            profissionais_servico = trinks_api_use.listar_profissionais_por_servico(servico_id)
+            profissionais = profissionais_servico if profissionais_servico else trinks_api_use.listar_profissionais()
             _debug("👥 {} profissionais para serviço {} (filtrado={})".format(
                 len(profissionais), servico_nome, bool(profissionais_servico)))
         except Exception as e:
@@ -716,14 +736,14 @@ class AICoreMariana:
 
         if not cliente_id:
             try:
-                candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+                candidatos = trinks_api_use.buscar_candidatos_cliente(nome_cliente, tel_cliente)
             except Exception as e:
                 logger.warning("Erro ao buscar candidatos: %s", str(e))
                 candidatos = []
 
             if len(candidatos) == 0:
                 try:
-                    novo = trinks_api.criar_cliente(nome_cliente, tel_cliente)
+                    novo = trinks_api_use.criar_cliente(nome_cliente, tel_cliente)
                     cliente_id = novo.get("id") if novo else None
                 except Exception as e:
                     logger.warning("Erro ao criar cliente: %s", str(e))
@@ -769,7 +789,7 @@ class AICoreMariana:
         _debug("📤 servicoId={} | clienteId={} | profId={} | dataHoraInicio={} | {}min | R${:.0f}".format(
             servico_id, cliente_id, profissional_id, data_hora_iso, duracao_minutos, valor_servico))
 
-        resultado = trinks_api.criar_agendamento(payload)
+        resultado = trinks_api_use.criar_agendamento(payload)
 
         if resultado and resultado.get("id"):
             ag_id = resultado["id"]
@@ -787,16 +807,17 @@ class AICoreMariana:
         _debug("❌ Falha ao criar agendamento — API não retornou ID")
         return {"erro": "Falha ao criar agendamento no Trinks. Tente novamente ou ligue para o salão."}
 
-    def _tool_listar_agendamentos_cliente(self, args, telefone, cliente_info):
+    def _tool_listar_agendamentos_cliente(self, args, telefone, cliente_info, trinks_client=None):
         from app.services.trinks_api import trinks_api
         from datetime import timedelta
+        trinks_api_use = trinks_client or trinks_api
 
         nome_cliente = args.get("cliente_nome") or cliente_info.get("nome", "")
         tel_cliente = telefone or ""
 
         cliente_id = None
         try:
-            candidatos = trinks_api.buscar_candidatos_cliente(nome_cliente, tel_cliente)
+            candidatos = trinks_api_use.buscar_candidatos_cliente(nome_cliente, tel_cliente)
             if candidatos:
                 cliente_id = candidatos[0].get("id")
         except Exception as e:
@@ -805,7 +826,7 @@ class AICoreMariana:
         hoje = _agora_sp().strftime("%Y-%m-%d")
         em_60_dias = (_agora_sp() + timedelta(days=60)).strftime("%Y-%m-%d")
         try:
-            todos = trinks_api.listar_agendamentos(data_inicio=hoje, data_fim=em_60_dias)
+            todos = trinks_api_use.listar_agendamentos(data_inicio=hoje, data_fim=em_60_dias)
         except Exception as e:
             logger.error("Erro ao listar agendamentos: %s", str(e))
             return {"erro": "Não foi possível buscar seus agendamentos."}
@@ -836,16 +857,18 @@ class AICoreMariana:
 
         return {"agendamentos": itens, "total": len(itens)}
 
-    def _tool_cancelar_agendamento(self, args, telefone):
+    def _tool_cancelar_agendamento(self, args, telefone, trinks_client=None, whatsapp_instance=None):
         from app.services.trinks_api import trinks_api
         from app.services.evolution_api import evolution_api_client
         from config import WHATSAPP_INSTANCE_NAME
+        trinks_api_use = trinks_client or trinks_api
+        wi = whatsapp_instance or WHATSAPP_INSTANCE_NAME
 
         def _debug(msg):
             logger.info("[DEBUG-CANCELAMENTO] %s", msg)
             try:
                 evolution_api_client.enviar_mensagem(
-                    instance=WHATSAPP_INSTANCE_NAME,
+                    instance=wi,
                     numero=telefone,
                     mensagem="🔧 *[DEV]* " + msg,
                 )
@@ -858,7 +881,7 @@ class AICoreMariana:
 
         motivo = args.get("motivo", "")
         _debug("📤 Cancelando agendamento id={}".format(agendamento_id))
-        resultado = trinks_api.cancelar_agendamento(agendamento_id, motivo=motivo)
+        resultado = trinks_api_use.cancelar_agendamento(agendamento_id, motivo=motivo)
 
         if resultado is True:
             _debug("✅ Agendamento {} cancelado!".format(agendamento_id))
@@ -873,7 +896,7 @@ class AICoreMariana:
 
     # ── Prompt ──────────────────────────────────────────
 
-    def _construir_system_prompt(self, cliente_info):
+    def _construir_system_prompt(self, cliente_info, salao_nome=None):
         nome_cliente = cliente_info.get("nome", "Cliente")
         nome_conhecido = cliente_info.get("nome_conhecido", False)
         is_primeira_vez = cliente_info.get("is_primeira_vez", False)
@@ -887,6 +910,7 @@ class AICoreMariana:
         sexo_str = {"M": "Masculino", "F": "Feminino"}.get(sexo, "Não informado")
         agora_sp = _agora_sp()
         data_hoje = agora_sp.strftime("%d/%m/%Y %H:%M")
+        salao = salao_nome or self.salao_name
 
         if is_primeira_vez:
             saudacao_instrucao = (
@@ -953,7 +977,7 @@ class AICoreMariana:
             "11. NUNCA invente IDs ou confirme operações sem retorno sucesso=True da função."
         ).format(
             nome=self.marina_name,
-            salao=self.salao_name,
+            salao=salao,
             data_hoje=data_hoje,
             nome_cliente=nome_cliente,
             sexo_str=sexo_str,
@@ -968,9 +992,10 @@ class AICoreMariana:
 
     # ── Prompt Staff ───────────────────────────────────────────
 
-    def _construir_system_prompt_staff(self, funcionario_nome):
+    def _construir_system_prompt_staff(self, funcionario_nome, salao_nome=None):
         agora_sp = _agora_sp()
         data_hoje = agora_sp.strftime("%d/%m/%Y %H:%M")
+        salao = salao_nome or self.salao_name
         return (
             "Você é a {nome}, assistente administrativa do salão {salao}. Hoje é {data_hoje}.\n\n"
             "MODO: STAFF — você está conversando com um funcionário do salão: {funcionario}.\n\n"
@@ -997,7 +1022,7 @@ class AICoreMariana:
             "8. NUNCA invente IDs ou confirme operações sem retorno sucesso=True."
         ).format(
             nome=self.marina_name,
-            salao=self.salao_name,
+            salao=salao,
             data_hoje=data_hoje,
             funcionario=funcionario_nome,
             servicos=self._servicos_para_texto(),
@@ -1071,15 +1096,19 @@ class AICoreMariana:
         return digits in STAFF_PHONES or ("55" + digits) in STAFF_PHONES or digits.lstrip("55") in STAFF_PHONES
 
     def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,
-                                 db=None, telefone=None):
+                                 db=None, telefone=None, salao_nome=None,
+                                 trinks_client=None, whatsapp_instance=None):
         try:
             is_staff = self._is_staff(telefone or "")
             if is_staff:
                 funcionario_nome = cliente_info.get("nome") or "Funcionário"
-                system_prompt = self._construir_system_prompt_staff(funcionario_nome)
-                logger.info("Modo STAFF ativado para: %s (%s)", funcionario_nome, telefone)
+                system_prompt = self._construir_system_prompt_staff(
+                    funcionario_nome, salao_nome=salao_nome)
+                logger.info("Modo STAFF ativado para: %s (%s) [%s]",
+                            funcionario_nome, telefone, salao_nome or self.salao_name)
             else:
-                system_prompt = self._construir_system_prompt(cliente_info)
+                system_prompt = self._construir_system_prompt(
+                    cliente_info, salao_nome=salao_nome)
             messages = [{"role": "system", "content": system_prompt}]
 
             if historico_conversas:
@@ -1102,7 +1131,11 @@ class AICoreMariana:
 
             messages.append({"role": "user", "content": mensagem})
 
-            resposta = self._chamar_gpt_com_tools(messages, db, telefone, cliente_info)
+            resposta = self._chamar_gpt_com_tools(
+                messages, db, telefone, cliente_info,
+                trinks_client=trinks_client,
+                whatsapp_instance=whatsapp_instance,
+            )
 
             if not resposta:
                 resposta = self._resposta_fallback(mensagem, cliente_info)

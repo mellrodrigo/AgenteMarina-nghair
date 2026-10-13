@@ -19,8 +19,8 @@ from app.models.database import SessionLocal, criar_tabelas
 from app.services.cliente_service import cliente_service
 from app.services.ai_core import ai_core
 from app.services.evolution_api import evolution_api_client
-from app.services.trinks_api import trinks_api
-from config import WHATSAPP_INSTANCE_NAME, TRINKS_SYNC_INTERVAL
+from app.services.trinks_api import trinks_api, get_trinks_para_salao
+from config import WHATSAPP_INSTANCE_NAME, TRINKS_SYNC_INTERVAL, SALOES, SALAO_PADRAO
 
 os.makedirs("logs", exist_ok=True)
 os.makedirs("data", exist_ok=True)
@@ -111,6 +111,11 @@ def webhook_whatsapp(event=None):
         if event not in ['messages.upsert', 'MESSAGES_UPSERT']:
             return jsonify({"status": "ok"}), 200
 
+        # Identifica o salão pelo nome da instância Evolution API
+        instance_name = data.get('instance') or data.get('instanceName') or WHATSAPP_INSTANCE_NAME
+        salao_cfg = SALOES.get(instance_name, SALAO_PADRAO)
+        salao_nome = salao_cfg["nome"]
+
         msg_data = data.get('data', {})
 
         key = msg_data.get('key', {})
@@ -150,10 +155,10 @@ def webhook_whatsapp(event=None):
 
         audio_msg = message.get('audioMessage') or message.get('pttMessage')
         if not texto and audio_msg:
-            logger.info("Áudio recebido de %s (%s) — transcrevendo...", telefone, push_name)
+            logger.info("Áudio recebido de %s (%s) [%s] — transcrevendo...", telefone, push_name, salao_nome)
             threading.Thread(
                 target=processar_audio_background,
-                args=(telefone, remote_jid, msg_data, push_name),
+                args=(telefone, remote_jid, msg_data, push_name, instance_name, salao_nome),
                 daemon=True
             ).start()
             return jsonify({"status": "ok"}), 200
@@ -161,11 +166,11 @@ def webhook_whatsapp(event=None):
         if not texto or not telefone:
             return jsonify({"status": "ok"}), 200
 
-        logger.info("Mensagem de %s (%s): %s", telefone, push_name, texto[:100])
+        logger.info("Mensagem de %s (%s) [%s]: %s", telefone, push_name, salao_nome, texto[:100])
 
         threading.Thread(
             target=processar_mensagem_background,
-            args=(telefone, texto, remote_jid, push_name),
+            args=(telefone, texto, remote_jid, push_name, instance_name, salao_nome),
             daemon=True
         ).start()
 
@@ -176,14 +181,17 @@ def webhook_whatsapp(event=None):
         return jsonify({"status": "error"}), 500
 
 
-def processar_audio_background(telefone, remote_jid, msg_data, push_name=''):
+def processar_audio_background(telefone, remote_jid, msg_data, push_name='',
+                               instance_name=None, salao_nome=None):
     """Extrai base64 do payload, transcreve com Whisper e processa como texto normal."""
+    instance_name = instance_name or WHATSAPP_INSTANCE_NAME
+    salao_nome = salao_nome or SALAO_PADRAO["nome"]
     try:
         audio_bytes, mimetype = evolution_api_client.extrair_audio_base64(msg_data)
         if not audio_bytes:
             logger.warning("Não foi possível extrair áudio de %s", telefone)
             evolution_api_client.enviar_mensagem(
-                instance=WHATSAPP_INSTANCE_NAME,
+                instance=instance_name,
                 numero=telefone,
                 mensagem="Não consegui ouvir seu áudio 😕 Pode digitar sua mensagem?"
             )
@@ -192,25 +200,33 @@ def processar_audio_background(telefone, remote_jid, msg_data, push_name=''):
         texto = ai_core.transcrever_audio(audio_bytes, mimetype or "audio/ogg")
         if not texto:
             evolution_api_client.enviar_mensagem(
-                instance=WHATSAPP_INSTANCE_NAME,
+                instance=instance_name,
                 numero=telefone,
                 mensagem="Não consegui entender o áudio 😕 Pode digitar sua mensagem?"
             )
             return
 
         logger.info("Áudio de %s transcrito: %s", telefone, texto[:100])
-        processar_mensagem_background(telefone, texto, remote_jid, push_name)
+        processar_mensagem_background(telefone, texto, remote_jid, push_name, instance_name, salao_nome)
 
     except Exception as e:
         logger.error("Erro ao processar áudio de %s: %s", telefone, str(e))
 
 
-def processar_mensagem_background(telefone, texto, remote_jid, push_name=''):
+def processar_mensagem_background(telefone, texto, remote_jid, push_name='',
+                                   instance_name=None, salao_nome=None):
+    instance_name = instance_name or WHATSAPP_INSTANCE_NAME
+    salao_nome = salao_nome or SALAO_PADRAO["nome"]
+    trinks_client = get_trinks_para_salao(instance_name)
+
     db = SessionLocal()
     try:
         cliente = cliente_service.buscar_ou_criar_cliente(db, telefone, nome=push_name or None)
         if push_name and (not cliente.nome or cliente.nome == 'Cliente'):
             cliente_service.atualizar_cliente(db, cliente.id, nome=push_name)
+        # Registra o salão no cadastro do cliente (na primeira vez ou se mudou)
+        if not cliente.salao or cliente.salao != salao_nome:
+            cliente_service.atualizar_cliente(db, cliente.id, salao=salao_nome)
         contexto = cliente_service.obter_contexto_cliente(db, cliente.id)
         historico = cliente_service.obter_historico_conversas(db, cliente.id, limite=5)
 
@@ -220,6 +236,9 @@ def processar_mensagem_background(telefone, texto, remote_jid, push_name=''):
             historico_conversas=historico,
             db=db,
             telefone=telefone,
+            salao_nome=salao_nome,
+            trinks_client=trinks_client,
+            whatsapp_instance=instance_name,
         )
 
         cliente_service.salvar_conversa(
@@ -227,22 +246,23 @@ def processar_mensagem_background(telefone, texto, remote_jid, push_name=''):
             cliente_id=cliente.id,
             mensagem_usuario=texto,
             resposta_marina=resposta,
-            intencao=intencao
+            intencao=intencao,
+            salao=salao_nome,
         )
 
         evolution_api_client.enviar_mensagem(
-            instance=WHATSAPP_INSTANCE_NAME,
+            instance=instance_name,
             numero=telefone,
             mensagem=resposta
         )
 
-        logger.info("Resposta enviada para %s", telefone)
+        logger.info("Resposta enviada para %s [%s]", telefone, salao_nome)
 
     except Exception as e:
         logger.error("Erro ao processar mensagem de %s: %s", telefone, str(e))
         try:
             evolution_api_client.enviar_mensagem(
-                instance=WHATSAPP_INSTANCE_NAME,
+                instance=instance_name,
                 numero=remote_jid,
                 mensagem="Desculpe, tive um probleminha técnico. Pode tentar novamente? 😊"
             )

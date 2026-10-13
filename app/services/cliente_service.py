@@ -135,7 +135,7 @@ class ClienteService:
             return []
 
     @staticmethod
-    def salvar_conversa(db, cliente_id, mensagem_usuario, resposta_marina, intencao, contexto=None):
+    def salvar_conversa(db, cliente_id, mensagem_usuario, resposta_marina, intencao, contexto=None, salao=None):
         """Salva conversa no historico"""
         try:
             conversa = Conversa(
@@ -144,6 +144,7 @@ class ClienteService:
                 resposta_marina=resposta_marina,
                 intencao=intencao,
                 contexto=str(contexto) if contexto else None,
+                salao=salao,
                 timestamp=datetime.utcnow()
             )
             db.add(conversa)

@@ -25,20 +25,20 @@ from config import TRINKS_API_KEY, TRINKS_API_URL, TRINKS_ESTABELECIMENTO_ID
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "X-Api-Key": TRINKS_API_KEY,
-    "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
-    "accept": "application/json",
-    "Content-Type": "application/json",
-}
-
 
 class TrinksAPIClient:
 
-    def __init__(self):
-        self.base_url = TRINKS_API_URL.rstrip("/")
+    def __init__(self, api_key: str = None, estabelecimento_id: str = None, api_url: str = None):
+        self.api_key = api_key or TRINKS_API_KEY
+        self.estabelecimento_id = str(estabelecimento_id or TRINKS_ESTABELECIMENTO_ID)
+        self.base_url = (api_url or TRINKS_API_URL).rstrip("/")
         self.session = requests.Session()
-        self.session.headers.update(HEADERS)
+        self.session.headers.update({
+            "X-Api-Key": self.api_key,
+            "estabelecimentoId": self.estabelecimento_id,
+            "accept": "application/json",
+            "Content-Type": "application/json",
+        })
         self.ultima_sincronizacao: Optional[datetime] = None
 
     # ── HTTP helpers ──────────────────
@@ -181,7 +181,7 @@ class TrinksAPIClient:
     def listar_clientes(self, nome: str = None, telefone: str = None, incluir_detalhes: bool = False) -> List[Dict]:
         """GET /v1/clientes"""
         params = {
-            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+            "estabelecimentoId": self.estabelecimento_id,
             "incluirDetalhes": "true" if incluir_detalhes else "false",
         }
         if nome:
@@ -199,7 +199,7 @@ class TrinksAPIClient:
         """POST /v1/clientes"""
         tel_clean = "".join(filter(str.isdigit, telefone))
         payload = {
-            "estabelecimentoId": TRINKS_ESTABELECIMENTO_ID,
+            "estabelecimentoId": self.estabelecimento_id,
             "nome": nome,
             "telefones": [{"numero": tel_clean, "tipo": "celular"}] if tel_clean else [],
         }
@@ -447,3 +447,30 @@ class TrinksAPIClient:
 
 
 trinks_api = TrinksAPIClient()
+
+# Instâncias por salão — criadas a partir de SALOES em config.py
+# Importação tardia para evitar circular import; populado em get_trinks_para_salao()
+_trinks_por_salao: dict = {}
+
+
+def get_trinks_para_salao(instance_name: str) -> "TrinksAPIClient":
+    """Retorna (ou cria) o cliente Trinks correto para a instância Evolution API informada."""
+    from config import SALOES, SALAO_PADRAO
+    if instance_name and instance_name in SALOES:
+        if instance_name not in _trinks_por_salao:
+            cfg = SALOES[instance_name]
+            _trinks_por_salao[instance_name] = TrinksAPIClient(
+                api_key=cfg["trinks_api_key"],
+                estabelecimento_id=cfg["trinks_estabelecimento_id"],
+                api_url=cfg["trinks_api_url"],
+            )
+        return _trinks_por_salao[instance_name]
+    # Fallback: salão padrão
+    if "default" not in _trinks_por_salao:
+        cfg = SALAO_PADRAO
+        _trinks_por_salao["default"] = TrinksAPIClient(
+            api_key=cfg["trinks_api_key"],
+            estabelecimento_id=cfg["trinks_estabelecimento_id"],
+            api_url=cfg["trinks_api_url"],
+        )
+    return _trinks_por_salao["default"]

@@ -34,6 +34,7 @@ class Cliente(Base):
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String(255), nullable=False)
     telefone = Column(String(20), unique=True, index=True, nullable=False)
+    salao = Column(String(100), nullable=True, index=True)  # ex: "NGHair Brooklin"
     email = Column(String(255), nullable=True)
     
     # Dados de controle
@@ -61,15 +62,16 @@ class Conversa(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=False)
-    
+
     # Conteúdo da conversa
     mensagem_usuario = Column(Text, nullable=False)
     resposta_marina = Column(Text, nullable=False)
-    
+
     # Contexto
     intencao = Column(String(100), nullable=True)  # agendamento, consulta, etc
     contexto = Column(Text, nullable=True)  # JSON com contexto
-    
+    salao = Column(String(100), nullable=True)  # salão de origem da conversa
+
     # Controle
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     
@@ -200,6 +202,8 @@ def _migrar_colunas():
     migracoes = [
         "ALTER TABLE clientes ADD COLUMN sexo VARCHAR(10)",
         "ALTER TABLE profissionais ADD COLUMN especialidade VARCHAR(100)",
+        "ALTER TABLE clientes ADD COLUMN salao VARCHAR(100)",
+        "ALTER TABLE conversas ADD COLUMN salao VARCHAR(100)",
     ]
     with engine.connect() as conn:
         for sql in migracoes:
