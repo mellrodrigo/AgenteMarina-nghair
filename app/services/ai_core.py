@@ -22,6 +22,11 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 MARINA_NAME = os.environ.get("MARINA_NAME", "Marina")
 MARINA_SALAO = os.environ.get("MARINA_SALAO", "NGHair")
 
+_staff_phones_raw = os.environ.get("STAFF_PHONES", "")
+STAFF_PHONES = set(
+    p.strip().lstrip("+") for p in _staff_phones_raw.split(",") if p.strip()
+)
+
 _client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 _servicos_cache = []     # [{id_local, nome, preco, duracao_minutos}]
@@ -87,7 +92,8 @@ TOOLS = [
                     "servico_nome": {"type": "string", "description": "Nome exato do serviço (ex: Corte Feminino)"},
                     "profissional_nome": {"type": "string", "description": "Nome do profissional"},
                     "data_hora": {"type": "string", "description": "Data e hora no formato YYYY-MM-DD HH:MM"},
-                    "cliente_trinks_id": {"type": "integer", "description": "ID do cliente no Trinks (após seleção múltipla)"},
+                    "cliente_trinks_id": {"type": "integer", "description": "ID do cliente no Trinks (após seleção múltipla ou busca staff)"},
+                    "cliente_sexo": {"type": "string", "enum": ["M", "F"], "description": "Sexo do cliente (M ou F) — usar quando conhecido para selecionar Corte Masculino/Feminino corretamente"},
                 },
                 "required": ["cliente_nome", "servico_nome", "profissional_nome", "data_hora"]
             }
@@ -162,6 +168,26 @@ TOOLS = [
                     "email": {"type": "string", "description": "E-mail"},
                     "cpf": {"type": "string", "description": "CPF (somente números)"},
                     "genero": {"type": "string", "description": "Gênero: Masculino ou Feminino"},
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "buscar_cliente_staff",
+            "description": (
+                "[MODO STAFF] Busca um cliente no Trinks pelo nome, telefone ou e-mail. "
+                "Use quando um funcionário quiser agendar para outra pessoa. "
+                "Retorna lista de candidatos com id, nome e telefone para confirmação."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nome": {"type": "string", "description": "Nome (parcial ou completo) do cliente a buscar"},
+                    "telefone": {"type": "string", "description": "Telefone do cliente (somente dígitos, ex: 11976820026)"},
+                    "email": {"type": "string", "description": "E-mail do cliente"},
                 },
                 "required": []
             }
@@ -353,6 +379,8 @@ class AICoreMariana:
             return self._tool_validar_dados_cliente(args, telefone, cliente_info)
         elif nome == "atualizar_dados_cliente":
             return self._tool_atualizar_dados_cliente(args, telefone, cliente_info)
+        elif nome == "buscar_cliente_staff":
+            return self._tool_buscar_cliente_staff(args)
         return {"erro": "Ferramenta desconhecida: {}".format(nome)}
 
     def _tool_validar_dados_cliente(self, args, telefone, cliente_info):
@@ -459,6 +487,76 @@ class AICoreMariana:
             }
         return {"erro": "Não foi possível atualizar o cadastro. Tente novamente."}
 
+    def _tool_buscar_cliente_staff(self, args):
+        from app.services.trinks_api import trinks_api
+
+        nome = args.get("nome", "").strip()
+        telefone = args.get("telefone", "").strip()
+        email = args.get("email", "").strip()
+
+        if not nome and not telefone and not email:
+            return {"erro": "Informe pelo menos nome, telefone ou e-mail para buscar o cliente."}
+
+        candidatos = []
+        try:
+            if telefone or nome:
+                candidatos = trinks_api.buscar_candidatos_cliente(nome, telefone)
+            if not candidatos and email:
+                candidatos = trinks_api.listar_clientes(nome=email)
+        except Exception as e:
+            logger.error("Erro ao buscar cliente staff: %s", str(e))
+            return {"erro": "Erro ao buscar cliente no Trinks."}
+
+        if not candidatos:
+            return {
+                "encontrado": False,
+                "mensagem": "Nenhum cliente encontrado com esses dados. Deseja cadastrar um novo cliente?",
+            }
+
+        def _fmt_tel(obj):
+            fones = obj.get("telefone", [])
+            if not fones:
+                return ""
+            num = fones[0]
+            digits = "".join(filter(str.isdigit, num))
+            if len(digits) >= 10:
+                ddd = digits[:2]
+                resto = digits[2:]
+                return "({}) {}-{}".format(ddd, resto[:5], resto[5:])
+            return num
+
+        resultado = []
+        for c in candidatos[:5]:
+            resultado.append({
+                "id": c.get("id"),
+                "nome": c.get("nome", ""),
+                "telefone": _fmt_tel(c),
+                "email": c.get("email", "") or "",
+            })
+
+        if len(resultado) == 1:
+            c = resultado[0]
+            return {
+                "encontrado": True,
+                "cliente_id": c["id"],
+                "nome": c["nome"],
+                "telefone": c["telefone"],
+                "email": c["email"],
+                "mensagem": "Cliente encontrado: {} | Tel: {} | E-mail: {}. Confirma que é este cliente?".format(
+                    c["nome"], c["telefone"] or "não informado", c["email"] or "não informado"
+                ),
+            }
+
+        linhas = ["Encontrei {} clientes 🔍 Qual deles?\n".format(len(resultado))]
+        for i, c in enumerate(resultado, 1):
+            linhas.append("{}. {} | {}".format(i, c["nome"], c["telefone"] or c["email"] or "sem contato"))
+        return {
+            "encontrado": True,
+            "multiplos": True,
+            "candidatos": resultado,
+            "mensagem": "\n".join(linhas) + "\n\nResponda com o número (1, 2...) para confirmar.",
+        }
+
     def _tool_salvar_dados_cliente(self, args, db, cliente_info):
         from app.services.cliente_service import cliente_service
         cliente_id = cliente_info.get("id")
@@ -543,7 +641,7 @@ class AICoreMariana:
             return {"erro": "Formato de data/hora inválido. Use YYYY-MM-DD HH:MM"}
 
         # 2. Busca serviço — ajusta corte pelo sexo do cliente
-        sexo = cliente_info.get("sexo", "")
+        sexo = args.get("cliente_sexo") or cliente_info.get("sexo", "")
         palavras_corte = ["corte", "cabelo"]
         eh_corte = any(p in servico_nome.lower() for p in palavras_corte)
         if eh_corte and sexo == "M" and "masculino" not in servico_nome.lower() and "feminino" not in servico_nome.lower():
@@ -868,6 +966,44 @@ class AICoreMariana:
             profissionais_lista=self._profissionais_para_texto(),
         )
 
+    # ── Prompt Staff ───────────────────────────────────────────
+
+    def _construir_system_prompt_staff(self, funcionario_nome):
+        agora_sp = _agora_sp()
+        data_hoje = agora_sp.strftime("%d/%m/%Y %H:%M")
+        return (
+            "Você é a {nome}, assistente administrativa do salão {salao}. Hoje é {data_hoje}.\n\n"
+            "MODO: STAFF — você está conversando com um funcionário do salão: {funcionario}.\n\n"
+            "PERFIL:\n"
+            "- Tom: eficiente, direto e prestativo\n"
+            "- Objetivo: ajudar o funcionário a gerenciar agendamentos e cadastros de clientes\n\n"
+            "SERVIÇOS DISPONÍVEIS:\n"
+            "{servicos}\n\n"
+            "PROFISSIONAIS DISPONÍVEIS:\n"
+            "{profissionais}\n\n"
+            "INSTRUÇÕES MODO STAFF:\n"
+            "1. Responda em português brasileiro, seja breve e objetivo\n"
+            "2. Você está agindo EM NOME do salão, não do cliente — confie nas informações do funcionário\n"
+            "3. FLUXO DE AGENDAMENTO PARA TERCEIROS:\n"
+            "   a) Quando o funcionário pedir para agendar para um cliente, use buscar_cliente_staff para localizar o cliente no Trinks pelo nome, telefone ou e-mail.\n"
+            "   b) Se encontrar mais de um resultado, apresente a lista e peça confirmação.\n"
+            "   c) Após confirmar o cliente (obtendo o id do Trinks), prossiga com validar_dados_cliente.\n"
+            "   d) Em seguida, confirme serviço, profissional e data/hora com o funcionário.\n"
+            "   e) Chame criar_agendamento com o cliente_trinks_id confirmado.\n"
+            "4. Se o cliente não existir no Trinks, informe e pergunte se deve cadastrá-lo (peça nome completo e telefone).\n"
+            "5. CANCELAMENTO: fluxo igual ao normal — listar_agendamentos_cliente, confirmar, cancelar_agendamento.\n"
+            "6. ATUALIZAÇÃO DE CADASTRO: use atualizar_dados_cliente quando o funcionário informar dados novos do cliente.\n"
+            "7. CONFIRMAÇÃO OBRIGATÓRIA: após criar_agendamento, SEMPRE informe o ID retornado.\n"
+            "8. NUNCA invente IDs ou confirme operações sem retorno sucesso=True."
+        ).format(
+            nome=self.marina_name,
+            salao=self.salao_name,
+            data_hoje=data_hoje,
+            funcionario=funcionario_nome,
+            servicos=self._servicos_para_texto(),
+            profissionais=self._profissionais_para_texto(),
+        )
+
     # ── Fallback sem IA ────────────────────────────────────────
 
     def _resposta_fallback(self, mensagem, cliente_info):
@@ -926,10 +1062,24 @@ class AICoreMariana:
         seen = set()
         return [x for x in ids if not (x in seen or seen.add(x))]
 
+    def _is_staff(self, telefone: str) -> bool:
+        """Verifica se o telefone pertence a um funcionário do salão."""
+        if not telefone or not STAFF_PHONES:
+            return False
+        digits = "".join(filter(str.isdigit, telefone))
+        # Tenta com e sem DDI 55
+        return digits in STAFF_PHONES or ("55" + digits) in STAFF_PHONES or digits.lstrip("55") in STAFF_PHONES
+
     def processar_mensagem_sync(self, mensagem, cliente_info, historico_conversas=None,
                                  db=None, telefone=None):
         try:
-            system_prompt = self._construir_system_prompt(cliente_info)
+            is_staff = self._is_staff(telefone or "")
+            if is_staff:
+                funcionario_nome = cliente_info.get("nome") or "Funcionário"
+                system_prompt = self._construir_system_prompt_staff(funcionario_nome)
+                logger.info("Modo STAFF ativado para: %s (%s)", funcionario_nome, telefone)
+            else:
+                system_prompt = self._construir_system_prompt(cliente_info)
             messages = [{"role": "system", "content": system_prompt}]
 
             if historico_conversas:
